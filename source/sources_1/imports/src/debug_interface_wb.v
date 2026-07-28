@@ -32,7 +32,7 @@ begin
 	begin
 		if(wb_cyc_i && wb_stb_i && wb_we_i)
 		begin
-			$display(wb_dat_i[31:0]);
+			$display("[%0t] : %d", $time, wb_dat_i[31:0]);
 		end    
 	end
 end

@@ -21,14 +21,19 @@ static int test_keys(void)
   uint8_t key_a[CRYPTO_BYTES];
   uint8_t key_b[CRYPTO_BYTES];
 
+  *DEBUG_REG = 40;
+
   // Alice generates a public key
   crypto_kem_keypair(pk, sk);
+  *DEBUG_REG = 41;
 
   // Bob derives a secret key and creates a response
   crypto_kem_enc(ct, key_b, pk);
+  *DEBUG_REG = 42;
 
   // Alice uses Bob's response to get her shared key
   crypto_kem_dec(key_a, ct, sk);
+  *DEBUG_REG = 43;
 
   if(memcmp(key_a, key_b, CRYPTO_BYTES)) {
     return 1; // Fail flag

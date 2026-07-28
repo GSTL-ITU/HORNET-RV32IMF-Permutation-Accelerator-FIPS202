@@ -1,0 +1,24 @@
+KYBER: 
+
+    with accelerator (ps - 40 MHz):
+
+            [1062000] :         40 - start (test_keys)
+        [17545787000] :         41 - keypair generation end
+        [41551087000] :         42 - encapsulation end
+        [74202587000] :         43 - decapsulation end
+
+        keypair generation : 701,789   cycles
+        encapsulation      : 960,212   cycles
+        decapsulation      : 1,306,060 cycles
+
+    reference (ps - 40 MHz):
+
+             [1062000] :         40 - start (test_keys)
+         [43288612000] :         41 - keypair generation end
+         [92904737000] :         42 - encapsulation end
+        [150655387000] :         43 - decapsulation end
+
+        keypair generation : 1,731,502 cycles
+        encapsulation      : 1,984,645 cycles
+        decapsulation      : 2,310,026 cycles
+
