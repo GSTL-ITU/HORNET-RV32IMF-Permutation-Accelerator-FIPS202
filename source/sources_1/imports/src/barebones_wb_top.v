@@ -11,7 +11,7 @@ module barebones_wb_top (
     // -------------------------------------------------------------------------
     parameter MEMORY_INIT  = "memory_init_tb.mem";
     parameter RAM_DEPTH    = 120000;
-    parameter NUM_SLAVES   = 4;
+    parameter NUM_SLAVES   = 5;
     parameter reset_vector = 32'h0000_0000; // Starting address for the PC
 
     // -------------------------------------------------------------------------
@@ -80,6 +80,10 @@ module barebones_wb_top (
     // Slave 3: Debug Interface
     assign slave_adr_begin[3] = 32'h1000_8010;
     assign slave_adr_end[3]   = 32'h1000_8010;
+
+    // Slave 4: Keccak Accelerator
+    assign slave_adr_begin[4] = 32'h1000_9000;
+    assign slave_adr_end[4]   = 32'h1000_9FFF;
 
     // -------------------------------------------------------------------------
     // Crossbar / Interconnect Logic
@@ -298,6 +302,21 @@ module barebones_wb_top (
         .wb_err_o(wb_err_o[3]),
         .wb_rst_i(wb_rst_i[3]),
         .wb_clk_i(wb_clk_i[3])
+    );
+
+    keccak_accelerator_wb keccak_acc_inst (
+        .wb_cyc_i(wb_cyc_i[4]),
+        .wb_stb_i(wb_stb_i[4]),
+        .wb_we_i(wb_we_i[4]),
+        .wb_adr_i(wb_adr_i[4]),
+        .wb_dat_i(wb_dat_i[4]),
+        .wb_sel_i(wb_sel_i[4]),
+        .wb_stall_o(wb_stall_o[4]),
+        .wb_ack_o(wb_ack_o[4]),
+        .wb_dat_o(wb_dat_o[4]),
+        .wb_err_o(wb_err_o[4]),
+        .wb_rst_i(wb_rst_i[4]),
+        .wb_clk_i(wb_clk_i[4])
     );
 
 endmodule

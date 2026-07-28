@@ -5,6 +5,10 @@
 #define KYBER_K 3	/* Change this for different security strengths */
 #endif
 
+#define KECCAK_EN_ADDR 0x10009000
+#define KECCAK_DN_ADDR 0x10009010
+#define KECCAK_ST_ADDR 0x10009020
+
 /* Don't change parameters below this line */
 #if   (KYBER_K == 2)
 #define KYBER_NAMESPACE(s) pqcrystals_kyber512_ref_##s

@@ -6,6 +6,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include "fips202.h"
+#include "params.h"
 
 #define NROUNDS 24
 #define ROL(a, offset) ((a << offset) ^ (a >> (64-offset)))
@@ -81,6 +82,29 @@ static const uint64_t KeccakF_RoundConstants[NROUNDS] = {
 **************************************************/
 static void KeccakF1600_StatePermute(uint64_t state[25])
 {
+  uint32_t *keccak_en_ptr = (uint32_t *)KECCAK_EN_ADDR;
+  uint32_t *keccak_dn_ptr = (uint32_t *)KECCAK_DN_ADDR;
+  uint64_t *keccak_st_ptr = (uint64_t *)KECCAK_ST_ADDR;
+
+  *keccak_dn_ptr = 0;
+  *keccak_en_ptr = 0;
+
+  //volatile uint32_t *debug_addr = (uint32_t *)0x10008010;
+  //*debug_addr = 10;
+
+  for (int i = 0; i < 25; i++) {
+    //*debug_addr = (uint32_t)keccak_st_ptr;
+    keccak_st_ptr[i] = state[i];
+  }
+
+  *keccak_en_ptr = 1;
+  
+  while (*keccak_dn_ptr != 1) {
+    __asm__ volatile ("nop");
+  }
+
+
+/*
         int round;
 
         uint64_t Aba, Abe, Abi, Abo, Abu;
@@ -341,6 +365,7 @@ static void KeccakF1600_StatePermute(uint64_t state[25])
         state[22] = Asi;
         state[23] = Aso;
         state[24] = Asu;
+*/
 }
 
 /*************************************************

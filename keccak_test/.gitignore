@@ -1,0 +1,4 @@
+test_data_out_rtl.hex
+test_data_out_sw.hex
+rtl/obj_dir
+sw/test_sw
