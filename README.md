@@ -1,3 +1,55 @@
+# HORNET-RV32IMF with Permutation Accelerator for Keccak (FIPS202)
+
+This repository contains a hardware/software environment for the Keccak-f[1600] permutation accelerator (FIPS 202 standard) integrated with the HORNET-RV32IMF processor architecture.
+
+It includes full RTL hardware designs, C reference code, unit testbenches, and automated build verification scripts using Verilator.
+
+The added accelerator `keccak_accelerator` is connected only via the Wishbone bus interface. No modifications are made inside the core itself. 
+Software modifications are made so the core sends the data through the accelerator address range.
+
+**STATUS:** Only ML-KEM has been tested so far.
+
+## Project Structure
+
+```
+├─ keccak_test/         # Test files for accelerator verification
+├─ rom_gen/             # ROM generator
+├─ source/              # RTL source for Hornet Core and peripherals
+├─ test/                # PQC source codes and makefiles
+├─ verilator/           # Verilator build files
+├─ cbr.sh               # Auto -build & test- script
+└─ cycle_report.txt     # Cycle count reports
+```
+
+## Prerequisites
+
+- gcc
+- verilator
+- make
+
+## Usage and Verification
+
+To compile, build and run the PQC source codes in the Hornet bare-metal configuration, simply run:
+```sh
+bash cbr.sh
+```
+
+To run verification, use the makefile in `keccak_test`:
+```sh
+cd keccak_test
+make
+```
+This will feed the `test_data_in.hex` file into the accelerator testbench, as well as a test program. 
+The resulting output files are then compared.
+
+### Contact
+Ali Barış Bozoğlu: [bozoglu20@itu.edu.tr](mailto:bozoglu20@itu.edu.tr) - [GitHub](https://github.com/alibarisbozoglu)
+
+
+**Original README for more info:**
+
+---
+
 # HORNET-RV32IMF: A RV32IMF RISC-V SoC
 
 ![Status](https://img.shields.io/badge/Status-Completed-success)
