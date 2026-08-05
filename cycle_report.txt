@@ -7,9 +7,9 @@ KYBER:
         [41551087000] :         42 - encapsulation end
         [74202587000] :         43 - decapsulation end
 
-        keypair generation : 701,789   cycles
-        encapsulation      : 960,212   cycles
-        decapsulation      : 1,306,060 cycles
+        keypair generation : 1,754,473 cycles
+        encapsulation      : 2,400,530 cycles
+        decapsulation      : 3,265,150 cycles
 
     reference (ps - 40 MHz):
 
@@ -18,7 +18,7 @@ KYBER:
          [92904737000] :         42 - encapsulation end
         [150655387000] :         43 - decapsulation end
 
-        keypair generation : 1,731,502 cycles
-        encapsulation      : 1,984,645 cycles
-        decapsulation      : 2,310,026 cycles
+        keypair generation : 4,328,755 cycles
+        encapsulation      : 4,961,613 cycles
+        decapsulation      : 5,775,065 cycles
 
