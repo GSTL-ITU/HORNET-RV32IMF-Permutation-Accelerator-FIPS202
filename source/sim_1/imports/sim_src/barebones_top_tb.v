@@ -37,4 +37,31 @@ initial begin
     rst_ni = 1'b1; // Wait a cycle so that the instruction memory is ready
 end
 
+// Cycle counter + debug-interface monitor: prints the cycle of every debug write and
+// ends the simulation on 'P' (pass) / 'F' (fail) from the firmware.
+reg [63:0] cycle;
+always @(posedge clk_i) begin
+    if (!rst_ni)
+        cycle <= 64'd0;
+    else
+        cycle <= cycle + 64'd1;
+end
+
+wire debug_wr = uut.debug_if_inst.wb_cyc_i && uut.debug_if_inst.wb_stb_i && uut.debug_if_inst.wb_we_i;
+wire [31:0] debug_dat = uut.debug_if_inst.wb_dat_i;
+
+always @(posedge clk_i) begin
+    if (rst_ni && debug_wr) begin
+        $display("    cycle %0d : %0d", cycle, debug_dat);
+        if (debug_dat == "P") begin
+            $display("TEST PASSED");
+            $finish;
+        end
+        else if (debug_dat == "F") begin
+            $display("TEST FAILED");
+            $finish;
+        end
+    end
+end
+
 endmodule

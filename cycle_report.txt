@@ -1,24 +1,31 @@
-KYBER: 
+KYBER (Kyber768, NTESTS = 1, test_keys(), 40 MHz Verilator simulation)
 
-    with accelerator (ps - 40 MHz):
+    Cycle numbers are printed by barebones_top_tb.v ("cycle N : code").
+    Both builds use the same firmware, seed and SoC; only the Keccak implementation differs.
 
-            [1062000] :         40 - start (test_keys)
-        [17545787000] :         41 - keypair generation end
-        [41551087000] :         42 - encapsulation end
-        [74202587000] :         43 - decapsulation end
+    with accelerator (bash cbr.sh):
 
-        keypair generation : 1,754,473 cycles
-        encapsulation      : 2,400,530 cycles
-        decapsulation      : 3,265,150 cycles
+            cycle   54064 :    40 - start (test_keys)
+            cycle  811934 :    41 - keypair generation end
+            cycle 1798484 :    42 - encapsulation end
+            cycle 3142321 :    43 - decapsulation end
 
-    reference (ps - 40 MHz):
+        keypair generation :   757,870 cycles   (2.53x)
+        encapsulation      :   986,550 cycles   (2.20x)
+        decapsulation      : 1,343,837 cycles   (1.85x)
 
-             [1062000] :         40 - start (test_keys)
-         [43288612000] :         41 - keypair generation end
-         [92904737000] :         42 - encapsulation end
-        [150655387000] :         43 - decapsulation end
+    reference, software Keccak (KECCAK_SW=1 bash cbr.sh):
 
-        keypair generation : 4,328,755 cycles
-        encapsulation      : 4,961,613 cycles
-        decapsulation      : 5,775,065 cycles
+            cycle  753906 :    40 - start (test_keys)
+            cycle 2668357 :    41 - keypair generation end
+            cycle 4838557 :    42 - encapsulation end
+            cycle 7330705 :    43 - decapsulation end
 
+        keypair generation : 1,914,451 cycles
+        encapsulation      : 2,170,200 cycles
+        decapsulation      : 2,492,148 cycles
+
+    Keccak-f[1600] on the accelerator: 24 cycles per permutation (keccak_test).
+
+    Note: the previous report (1.75M / 2.40M / 3.27M with accelerator) is invalid. The driver never
+    read the permuted state back, so the "accelerated" run did not compute FIPS 202 at all.

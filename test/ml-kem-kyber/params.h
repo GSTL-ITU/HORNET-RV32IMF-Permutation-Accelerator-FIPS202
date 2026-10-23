@@ -5,9 +5,12 @@
 #define KYBER_K 3	/* Change this for different security strengths */
 #endif
 
-#define KECCAK_EN_ADDR 0x10009000
-#define KECCAK_DN_ADDR 0x10009010
-#define KECCAK_ST_ADDR 0x10009020
+/* Keccak accelerator (keccak_accelerator_wb). Build with -DKECCAK_SW for the software permutation. */
+#define KECCAK_BASE_ADDR   0x10009000u
+#define KECCAK_CTRL_OFS    0x000u  /* W: bit0 start, bit1 clear state; R: bit0 busy */
+#define KECCAK_STATUS_OFS  0x010u  /* R: bit0 done, bit1 busy; W: bit0 -> done */
+#define KECCAK_STATE_OFS   0x020u  /* 50 words, R/W */
+#define KECCAK_XOR_OFS     0x120u  /* 50 words, write XORs into the state */
 
 /* Don't change parameters below this line */
 #if   (KYBER_K == 2)

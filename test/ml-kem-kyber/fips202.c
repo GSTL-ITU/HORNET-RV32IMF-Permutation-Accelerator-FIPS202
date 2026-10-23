@@ -11,6 +11,7 @@
 #define NROUNDS 24
 #define ROL(a, offset) ((a << offset) ^ (a >> (64-offset)))
 
+#ifdef KECCAK_SW
 /*************************************************
 * Name:        load64
 *
@@ -44,7 +45,9 @@ static void store64(uint8_t x[8], uint64_t u) {
   for(i=0;i<8;i++)
     x[i] = u >> 8*i;
 }
+#endif
 
+#ifdef KECCAK_SW
 /* Keccak round constants */
 static const uint64_t KeccakF_RoundConstants[NROUNDS] = {
   (uint64_t)0x0000000000000001ULL,
@@ -82,29 +85,6 @@ static const uint64_t KeccakF_RoundConstants[NROUNDS] = {
 **************************************************/
 static void KeccakF1600_StatePermute(uint64_t state[25])
 {
-  uint32_t *keccak_en_ptr = (uint32_t *)KECCAK_EN_ADDR;
-  uint32_t *keccak_dn_ptr = (uint32_t *)KECCAK_DN_ADDR;
-  uint64_t *keccak_st_ptr = (uint64_t *)KECCAK_ST_ADDR;
-
-  *keccak_dn_ptr = 0;
-  *keccak_en_ptr = 0;
-
-  //volatile uint32_t *debug_addr = (uint32_t *)0x10008010;
-  //*debug_addr = 10;
-
-  for (int i = 0; i < 25; i++) {
-    //*debug_addr = (uint32_t)keccak_st_ptr;
-    keccak_st_ptr[i] = state[i];
-  }
-
-  *keccak_en_ptr = 1;
-  
-  while (*keccak_dn_ptr != 1) {
-    __asm__ volatile ("nop");
-  }
-
-
-/*
         int round;
 
         uint64_t Aba, Abe, Abi, Abo, Abu;
@@ -365,8 +345,129 @@ static void KeccakF1600_StatePermute(uint64_t state[25])
         state[22] = Asi;
         state[23] = Aso;
         state[24] = Asu;
-*/
 }
+#else /* !KECCAK_SW */
+
+/*
+ * Keccak accelerator driver (keccak_accelerator_wb on the Wishbone bus).
+ * The state lives in the accelerator; 64-bit lane i is word 2i (low) and 2i+1 (high),
+ * i.e. byte offset n of the Keccak state is byte n of the word window.
+ */
+#define KECCAK_CTRL   (*(volatile uint32_t *)(KECCAK_BASE_ADDR + KECCAK_CTRL_OFS))
+#define KECCAK_STATUS (*(volatile uint32_t *)(KECCAK_BASE_ADDR + KECCAK_STATUS_OFS))
+#define KECCAK_STATE  ((volatile uint32_t *)(KECCAK_BASE_ADDR + KECCAK_STATE_OFS))
+#define KECCAK_XOR    ((volatile uint32_t *)(KECCAK_BASE_ADDR + KECCAK_XOR_OFS))
+
+#define KECCAK_CTRL_START 0x1u
+#define KECCAK_CTRL_CLEAR 0x2u
+#define KECCAK_STATUS_DONE 0x1u
+
+static void acc_permute(void)
+{
+  KECCAK_CTRL = KECCAK_CTRL_START;
+  while(!(KECCAK_STATUS & KECCAK_STATUS_DONE))
+    ;
+}
+
+static void acc_clear(void)
+{
+  KECCAK_CTRL = KECCAK_CTRL_CLEAR;
+}
+
+static void acc_load(const uint64_t s[25])
+{
+  unsigned int i;
+  for(i=0;i<25;i++) {
+    KECCAK_STATE[2*i]   = (uint32_t)s[i];
+    KECCAK_STATE[2*i+1] = (uint32_t)(s[i] >> 32);
+  }
+}
+
+static void acc_store(uint64_t s[25])
+{
+  unsigned int i;
+  for(i=0;i<25;i++)
+    s[i] = (uint64_t)KECCAK_STATE[2*i] | ((uint64_t)KECCAK_STATE[2*i+1] << 32);
+}
+
+/* XOR inlen bytes into the state starting at byte offset pos */
+static void acc_xor_bytes(unsigned int pos, const uint8_t *in, size_t inlen)
+{
+  unsigned int n;
+  uint32_t w;
+
+  while(inlen) {
+    w = 0;
+    for(n=0; (pos & 3) + n < 4 && n < inlen; n++)
+      w |= (uint32_t)in[n] << 8*((pos & 3) + n);
+    KECCAK_XOR[pos >> 2] = w;
+    pos += n;
+    in += n;
+    inlen -= n;
+  }
+}
+
+/* Read outlen bytes of the state starting at byte offset 0 */
+static void acc_read_bytes(uint8_t *out, size_t outlen)
+{
+  unsigned int i, n;
+  uint32_t w;
+
+  for(i=0; outlen; i++) {
+    w = KECCAK_STATE[i];
+    for(n=0; n < 4 && outlen; n++, outlen--)
+      *out++ = w >> 8*n;
+  }
+}
+
+/* Zero the state, absorb in and pad; the result is left in the accelerator (not permuted) */
+static void acc_absorb_once(unsigned int r, const uint8_t *in, size_t inlen, uint8_t p)
+{
+  const uint8_t pad = 0x80;
+
+  acc_clear();
+  while(inlen >= r) {
+    acc_xor_bytes(0, in, r);
+    acc_permute();
+    in += r;
+    inlen -= r;
+  }
+  acc_xor_bytes(0, in, inlen);
+  acc_xor_bytes(inlen, &p, 1);
+  acc_xor_bytes(r-1, &pad, 1);
+}
+
+/* Absorb once, then squeeze outlen bytes; the state never leaves the accelerator */
+static void acc_hash(uint8_t *out, size_t outlen, unsigned int r,
+                     const uint8_t *in, size_t inlen, uint8_t p)
+{
+  size_t n;
+
+  acc_absorb_once(r, in, inlen, p);
+  while(outlen) {
+    acc_permute();
+    n = outlen < r ? outlen : r;
+    acc_read_bytes(out, n);
+    out += n;
+    outlen -= n;
+  }
+}
+
+/*************************************************
+* Name:        KeccakF1600_StatePermute
+*
+* Description: The Keccak F1600 Permutation, executed on the accelerator.
+*              Used by the incremental API, whose state lives in RAM.
+*
+* Arguments:   - uint64_t *state: pointer to input/output Keccak state
+**************************************************/
+static void KeccakF1600_StatePermute(uint64_t state[25])
+{
+  acc_load(state);
+  acc_permute();
+  acc_store(state);
+}
+#endif /* KECCAK_SW */
 
 /*************************************************
 * Name:        keccak_init
@@ -489,6 +590,10 @@ static void keccak_absorb_once(uint64_t s[25],
                                size_t inlen,
                                uint8_t p)
 {
+#ifndef KECCAK_SW
+  acc_absorb_once(r, in, inlen, p);
+  acc_store(s);
+#else
   unsigned int i;
 
   for(i=0;i<25;i++)
@@ -507,6 +612,7 @@ static void keccak_absorb_once(uint64_t s[25],
 
   s[i/8] ^= (uint64_t)p << 8*(i%8);
   s[(r-1)/8] ^= 1ULL << 63;
+#endif
 }
 
 /*************************************************
@@ -527,6 +633,19 @@ static void keccak_squeezeblocks(uint8_t *out,
                                  uint64_t s[25],
                                  unsigned int r)
 {
+#ifndef KECCAK_SW
+  /* One state transfer each way per call instead of one per block */
+  if(!nblocks)
+    return;
+  acc_load(s);
+  while(nblocks) {
+    acc_permute();
+    acc_read_bytes(out, r);
+    out += r;
+    nblocks -= 1;
+  }
+  acc_store(s);
+#else
   unsigned int i;
 
   while(nblocks) {
@@ -536,6 +655,7 @@ static void keccak_squeezeblocks(uint8_t *out,
     out += r;
     nblocks -= 1;
   }
+#endif
 }
 
 /*************************************************
@@ -724,6 +844,9 @@ void shake256_squeezeblocks(uint8_t *out, size_t nblocks, keccak_state *state)
 **************************************************/
 void shake128(uint8_t *out, size_t outlen, const uint8_t *in, size_t inlen)
 {
+#ifndef KECCAK_SW
+  acc_hash(out, outlen, SHAKE128_RATE, in, inlen, 0x1F);
+#else
   size_t nblocks;
   keccak_state state;
 
@@ -733,6 +856,7 @@ void shake128(uint8_t *out, size_t outlen, const uint8_t *in, size_t inlen)
   outlen -= nblocks*SHAKE128_RATE;
   out += nblocks*SHAKE128_RATE;
   shake128_squeeze(out, outlen, &state);
+#endif
 }
 
 /*************************************************
@@ -747,6 +871,9 @@ void shake128(uint8_t *out, size_t outlen, const uint8_t *in, size_t inlen)
 **************************************************/
 void shake256(uint8_t *out, size_t outlen, const uint8_t *in, size_t inlen)
 {
+#ifndef KECCAK_SW
+  acc_hash(out, outlen, SHAKE256_RATE, in, inlen, 0x1F);
+#else
   size_t nblocks;
   keccak_state state;
 
@@ -756,6 +883,7 @@ void shake256(uint8_t *out, size_t outlen, const uint8_t *in, size_t inlen)
   outlen -= nblocks*SHAKE256_RATE;
   out += nblocks*SHAKE256_RATE;
   shake256_squeeze(out, outlen, &state);
+#endif
 }
 
 /*************************************************
@@ -769,6 +897,9 @@ void shake256(uint8_t *out, size_t outlen, const uint8_t *in, size_t inlen)
 **************************************************/
 void sha3_256(uint8_t h[32], const uint8_t *in, size_t inlen)
 {
+#ifndef KECCAK_SW
+  acc_hash(h, 32, SHA3_256_RATE, in, inlen, 0x06);
+#else
   unsigned int i;
   uint64_t s[25];
 
@@ -776,6 +907,7 @@ void sha3_256(uint8_t h[32], const uint8_t *in, size_t inlen)
   KeccakF1600_StatePermute(s);
   for(i=0;i<4;i++)
     store64(h+8*i,s[i]);
+#endif
 }
 
 /*************************************************
@@ -789,6 +921,9 @@ void sha3_256(uint8_t h[32], const uint8_t *in, size_t inlen)
 **************************************************/
 void sha3_512(uint8_t h[64], const uint8_t *in, size_t inlen)
 {
+#ifndef KECCAK_SW
+  acc_hash(h, 64, SHA3_512_RATE, in, inlen, 0x06);
+#else
   unsigned int i;
   uint64_t s[25];
 
@@ -796,4 +931,5 @@ void sha3_512(uint8_t h[64], const uint8_t *in, size_t inlen)
   KeccakF1600_StatePermute(s);
   for(i=0;i<8;i++)
     store64(h+8*i,s[i]);
+#endif
 }

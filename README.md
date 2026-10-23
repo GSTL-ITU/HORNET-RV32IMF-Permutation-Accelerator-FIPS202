@@ -4,26 +4,47 @@ This repository contains a hardware/software environment for the Keccak-f[1600] 
 
 It includes full RTL hardware designs, C reference code, unit testbenches, and automated build verification scripts using Verilator.
 
-The added accelerator `keccak_accelerator` is connected only via the Wishbone bus interface. No modifications are made inside the core itself. 
+The added accelerator `keccak_accelerator_wb` is connected only via the Wishbone bus interface (slave 4, `0x1000_9000 - 0x1000_9FFF`). No modifications are made inside the core itself.
 Software modifications are made so the core sends the data through the accelerator address range.
 
-**STATUS:** Only ML-KEM has been tested so far.
+**STATUS:** Only ML-KEM (Kyber768) has been tested so far.
+
+## Accelerator
+
+- One full Keccak-f[1600] round per clock cycle: **24 cycles per permutation**.
+- The 1600-bit state lives inside the accelerator and is directly readable/writable over the bus.
+  Software absorbs by XORing into the state and squeezes by reading it, so one-shot hashes
+  (`sha3_256`, `sha3_512`, `shake128`, `shake256`) never copy the state to RAM.
+
+| Offset          | Name   | Access | Description |
+| :-------------- | :----- | :----- | :---------- |
+| `0x000`         | CTRL   | W      | bit0 = start permutation, bit1 = clear state (ignored while busy) |
+|                 |        | R      | bit0 = busy |
+| `0x010`         | STATUS | R      | bit0 = done (cleared on start), bit1 = busy |
+|                 |        | W      | bit0 is written into done |
+| `0x020 - 0x0E7` | STATE  | R/W    | 50 words; lane *i* = `{word 2i+1, word 2i}` (little-endian) |
+| `0x120 - 0x1E7` | XOR    | W      | 50 words; written data is XORed into the state (reads return STATE) |
+
+State/XOR writes are ignored while busy; byte enables (`wb_sel_i`) are honoured.
+The C driver is in `test/ml-kem-kyber/fips202.c`; register offsets are in `test/ml-kem-kyber/params.h`.
 
 ## Project Structure
 
 ```
-├─ keccak_test/         # Test files for accelerator verification
+├─ keccak_test/         # Unit test for the accelerator (RTL vs reference C)
 ├─ rom_gen/             # ROM generator
 ├─ source/              # RTL source for Hornet Core and peripherals
 ├─ test/                # PQC source codes and makefiles
 ├─ verilator/           # Verilator build files
 ├─ cbr.sh               # Auto -build & test- script
-└─ cycle_report.txt     # Cycle count reports
+├─ cycle_report.txt     # Cycle count reports
+└─ changes.log          # Change log
 ```
 
 ## Prerequisites
 
-- gcc
+- gcc (host, also used to generate the Kyber known-answer header)
+- riscv32-unknown-elf toolchain
 - verilator
 - make
 
@@ -31,16 +52,22 @@ Software modifications are made so the core sends the data through the accelerat
 
 To compile, build and run the PQC source codes in the Hornet bare-metal configuration, simply run:
 ```sh
-bash cbr.sh
+bash cbr.sh                # with the accelerator
+KECCAK_SW=1 bash cbr.sh    # software Keccak reference
 ```
+The testbench prints the cycle number of every debug-interface write and stops on `P` (pass) or `F` (fail).
+Before the KEM tests the firmware runs FIPS 202 known-answer tests (fails with code `H` = 72), and the
+Kyber keypair/ciphertext/shared secret are compared against a host run with the software Keccak
+(`gen_kat.c` -> `kyber_kat.h`, fails with code `K` = 75).
 
-To run verification, use the makefile in `keccak_test`:
+To run the accelerator unit test, use the makefile in `keccak_test`:
 ```sh
 cd keccak_test
 make
 ```
-This will feed the `test_data_in.hex` file into the accelerator testbench, as well as a test program. 
-The resulting output files are then compared.
+This simulates `source/sources_1/imports/src/keccak_accelerator_wb.v` directly and compares it against
+the reference C permutation: single permutation, back-to-back permutations, the clear command,
+absorbing via the XOR window with byte-enable writes, and writes during a busy permutation.
 
 ### Contact
 Ali Barış Bozoğlu: [bozoglu20@itu.edu.tr](mailto:bozoglu20@itu.edu.tr) - [GitHub](https://github.com/alibarisbozoglu)

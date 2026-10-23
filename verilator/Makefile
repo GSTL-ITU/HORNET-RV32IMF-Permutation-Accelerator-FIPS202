@@ -22,6 +22,6 @@ wave: run
 clean:
 	@echo "Cleaning temp files..."
 	rm -f dump.vcd
-	rm -f obj_dir
+	rm -rf obj_dir
 
 .PHONY: lint build run wave clean

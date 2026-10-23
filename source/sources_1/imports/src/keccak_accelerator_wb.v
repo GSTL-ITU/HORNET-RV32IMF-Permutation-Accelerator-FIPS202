@@ -1,3 +1,20 @@
+// Keccak-f[1600] permutation accelerator (FIPS 202), Wishbone slave.
+//
+// One full round (theta, rho, pi, chi, iota) per clock: 24 cycles per permutation.
+// The state lives in the accelerator and is directly readable/writable over the bus,
+// so software can absorb/squeeze in place instead of copying 200 bytes per permutation.
+//
+// Register map (offsets from BASE_ADDR, 32-bit words, little-endian lanes):
+//   0x000        CTRL    W: bit0 = start permutation, bit1 = clear state (both may be set,
+//                           clear happens first). Ignored while busy.
+//                        R: bit0 = busy
+//   0x010        STATUS  W: bit0 is written into DONE (write 0 to clear it)
+//                        R: bit0 = done (sticky, cleared on start), bit1 = busy
+//   0x020-0x0E7  STATE   R/W: lane i low word at 0x020 + 8*i, high word at 0x024 + 8*i
+//   0x120-0x1E7  XOR     W: data is XORed into the state word (absorb), R: same as STATE
+// State/XOR writes are ignored while busy. Unmapped reads return 0, unmapped writes are ignored.
+// wb_sel_i byte enables are honoured for STATE and XOR writes.
+
 module keccak_accelerator_wb (
     input  wire        wb_cyc_i,
     input  wire        wb_stb_i,
@@ -12,423 +29,190 @@ module keccak_accelerator_wb (
     input  wire        wb_rst_i,
     input  wire        wb_clk_i
 );
-    parameter EN_ADDR = 32'h1000_9000;
-    parameter DN_ADDR = 32'h1000_9010;
-    parameter ST_ADDR = 32'h1000_9020;
-
-    reg en;
-    reg done;
-    reg load;
-    reg ack;
+    localparam CTRL_OFS   = 12'h000;
+    localparam STATUS_OFS = 12'h010;
+    localparam STATE_OFS  = 12'h020;
+    localparam XOR_OFS    = 12'h120;
+    localparam NWORDS     = 50;
 
     assign wb_stall_o = 1'b0;
-    assign wb_err_o = 1'b0;
+    assign wb_err_o   = 1'b0;
 
-    reg  [  31:0] sbuf [0:63];
-    wire [  31:0] sbuf_idx;
-    wire [  31:0] sbuf_offset;
-    reg  [   4:0] scnt;
-    reg  [   4:0] srnd;
+    reg [31:0] st [0:NWORDS-1];
+    reg        busy;
+    reg        done;
+    reg [ 4:0] rnd;
+    reg        ack;
+    reg [31:0] rdata;
 
-    assign sbuf_offset = wb_adr_i - ST_ADDR;
-    assign sbuf_idx = {2'b0, sbuf_offset[31:2]};
+    // -------------------------------------------------------------------------
+    // Address decoding (the interconnect already selects the 4 KiB window)
+    // -------------------------------------------------------------------------
+    wire [11:0] ofs       = wb_adr_i[11:0];
+    wire [11:0] st_ofs    = ofs - STATE_OFS;
+    wire [11:0] xor_ofs   = ofs - XOR_OFS;
+    wire        is_ctrl   = (ofs[11:2] == CTRL_OFS[11:2]);
+    wire        is_status = (ofs[11:2] == STATUS_OFS[11:2]);
+    wire        is_state  = (ofs >= STATE_OFS) && (ofs < STATE_OFS + 4*NWORDS);
+    wire        is_xor    = (ofs >= XOR_OFS)   && (ofs < XOR_OFS   + 4*NWORDS);
+    wire [ 5:0] word_idx  = is_xor ? xor_ofs[7:2] : st_ofs[7:2];
 
-    reg signed [63:0] round_constant [23:0];
+    wire        bus_wr    = wb_cyc_i && wb_stb_i && wb_we_i;
+    wire        bus_rd    = wb_cyc_i && wb_stb_i && !wb_we_i;
+    wire        start     = bus_wr && is_ctrl && wb_dat_i[0] && !busy;
+    wire        clear     = bus_wr && is_ctrl && wb_dat_i[1] && !busy;
+    wire        st_wr     = bus_wr && (is_state || is_xor) && !busy;
 
-    reg signed [63:0] Aba;
-    reg signed [63:0] Abe;
-    reg signed [63:0] Abi;
-    reg signed [63:0] Abo;
-    reg signed [63:0] Abu;
-    reg signed [63:0] Aga;
-    reg signed [63:0] Age;
-    reg signed [63:0] Agi;
-    reg signed [63:0] Ago;
-    reg signed [63:0] Agu;
-    reg signed [63:0] Aka;
-    reg signed [63:0] Ake;
-    reg signed [63:0] Aki;
-    reg signed [63:0] Ako;
-    reg signed [63:0] Aku;
-    reg signed [63:0] Ama;
-    reg signed [63:0] Ame;
-    reg signed [63:0] Ami;
-    reg signed [63:0] Amo;
-    reg signed [63:0] Amu;
-    reg signed [63:0] Asa;
-    reg signed [63:0] Ase;
-    reg signed [63:0] Asi;
-    reg signed [63:0] Aso;
-    reg signed [63:0] Asu;
+    wire [31:0] sel_mask  = {{8{wb_sel_i[3]}}, {8{wb_sel_i[2]}}, {8{wb_sel_i[1]}}, {8{wb_sel_i[0]}}};
 
-    reg signed [63:0] BCa,  BCe,  BCi,  BCo,  BCu;
-    reg signed [63:0] Da,   De,   Di,   DoDo, Du;
-    reg signed [63:0] Eba,  Ebe,  Ebi,  Ebo,  Ebu;
-    reg signed [63:0] Ega,  Ege,  Egi,  Ego,  Egu;
-    reg signed [63:0] Eka,  Eke,  Eki,  Eko,  Eku;
-    reg signed [63:0] Ema,  Eme,  Emi,  Emo,  Emu;
-    reg signed [63:0] Esa,  Ese,  Esi,  Eso,  Esu;
+    // -------------------------------------------------------------------------
+    // Round function: lane (x, y) is index x + 5*y, i.e. {st[2i+1], st[2i]}
+    // -------------------------------------------------------------------------
+    function [63:0] rol64;
+        input [63:0] v;
+        input integer n;
+        rol64 = (n == 0) ? v : ((v << n) | (v >> (64 - n)));
+    endfunction
 
-    assign round_constant[ 0] = 64'h0000_0000_0000_0001;
-    assign round_constant[ 1] = 64'h0000_0000_0000_8082;              
-    assign round_constant[ 2] = 64'h8000_0000_0000_808a;              
-    assign round_constant[ 3] = 64'h8000_0000_8000_8000;              
-    assign round_constant[ 4] = 64'h0000_0000_0000_808b;              
-    assign round_constant[ 5] = 64'h0000_0000_8000_0001;              
-    assign round_constant[ 6] = 64'h8000_0000_8000_8081;              
-    assign round_constant[ 7] = 64'h8000_0000_0000_8009;              
-    assign round_constant[ 8] = 64'h0000_0000_0000_008a;              
-    assign round_constant[ 9] = 64'h0000_0000_0000_0088;              
-    assign round_constant[10] = 64'h0000_0000_8000_8009;              
-    assign round_constant[11] = 64'h0000_0000_8000_000a;              
-    assign round_constant[12] = 64'h0000_0000_8000_808b;              
-    assign round_constant[13] = 64'h8000_0000_0000_008b;              
-    assign round_constant[14] = 64'h8000_0000_0000_8089;              
-    assign round_constant[15] = 64'h8000_0000_0000_8003;              
-    assign round_constant[16] = 64'h8000_0000_0000_8002;              
-    assign round_constant[17] = 64'h8000_0000_0000_0080;              
-    assign round_constant[18] = 64'h0000_0000_0000_800a;              
-    assign round_constant[19] = 64'h8000_0000_8000_000a;              
-    assign round_constant[20] = 64'h8000_0000_8000_8081;              
-    assign round_constant[21] = 64'h8000_0000_0000_8080;              
-    assign round_constant[22] = 64'h0000_0000_8000_0001;              
-    assign round_constant[23] = 64'h8000_0000_8000_8008;
+    function integer rho;
+        input integer i;
+        case (i)
+             0: rho =  0;   1: rho =  1;   2: rho = 62;   3: rho = 28;   4: rho = 27;
+             5: rho = 36;   6: rho = 44;   7: rho =  6;   8: rho = 55;   9: rho = 20;
+            10: rho =  3;  11: rho = 10;  12: rho = 43;  13: rho = 25;  14: rho = 39;
+            15: rho = 41;  16: rho = 45;  17: rho = 15;  18: rho = 21;  19: rho =  8;
+            20: rho = 18;  21: rho =  2;  22: rho = 61;  23: rho = 56;  default: rho = 14;
+        endcase
+    endfunction
 
-    always @(posedge wb_clk_i or posedge wb_rst_i) begin
-        if (wb_rst_i)
-            ack <= 1'b0;
-        else
-            ack <= wb_stb_i;  
+    reg [63:0] rc;
+    always @(*) begin
+        case (rnd)
+            5'd0 : rc = 64'h0000_0000_0000_0001;
+            5'd1 : rc = 64'h0000_0000_0000_8082;
+            5'd2 : rc = 64'h8000_0000_0000_808a;
+            5'd3 : rc = 64'h8000_0000_8000_8000;
+            5'd4 : rc = 64'h0000_0000_0000_808b;
+            5'd5 : rc = 64'h0000_0000_8000_0001;
+            5'd6 : rc = 64'h8000_0000_8000_8081;
+            5'd7 : rc = 64'h8000_0000_0000_8009;
+            5'd8 : rc = 64'h0000_0000_0000_008a;
+            5'd9 : rc = 64'h0000_0000_0000_0088;
+            5'd10: rc = 64'h0000_0000_8000_8009;
+            5'd11: rc = 64'h0000_0000_8000_000a;
+            5'd12: rc = 64'h0000_0000_8000_808b;
+            5'd13: rc = 64'h8000_0000_0000_008b;
+            5'd14: rc = 64'h8000_0000_0000_8089;
+            5'd15: rc = 64'h8000_0000_0000_8003;
+            5'd16: rc = 64'h8000_0000_0000_8002;
+            5'd17: rc = 64'h8000_0000_0000_0080;
+            5'd18: rc = 64'h0000_0000_0000_800a;
+            5'd19: rc = 64'h8000_0000_8000_000a;
+            5'd20: rc = 64'h8000_0000_8000_8081;
+            5'd21: rc = 64'h8000_0000_0000_8080;
+            5'd22: rc = 64'h0000_0000_8000_0001;
+            5'd23: rc = 64'h8000_0000_8000_8008;
+            default: rc = 64'h0;
+        endcase
     end
-    assign wb_ack_o = ack;
 
+    wire [63:0] a     [0:24];   // current state
+    wire [63:0] c     [0:4];    // theta column parities
+    wire [63:0] d     [0:4];    // theta effect
+    wire [63:0] b     [0:24];   // after theta, rho, pi
+    wire [63:0] a_nxt [0:24];   // after chi, iota
+
+    genvar x, y;
+    generate
+        for (x = 0; x < 5; x = x + 1) begin : g_theta
+            for (y = 0; y < 5; y = y + 1) begin : g_lane
+                assign a[x + 5*y] = {st[2*(x + 5*y) + 1], st[2*(x + 5*y)]};
+            end
+            assign c[x] = a[x] ^ a[x + 5] ^ a[x + 10] ^ a[x + 15] ^ a[x + 20];
+        end
+        for (x = 0; x < 5; x = x + 1) begin : g_d
+            assign d[x] = c[(x + 4) % 5] ^ rol64(c[(x + 1) % 5], 1);
+        end
+        for (x = 0; x < 5; x = x + 1) begin : g_rho_pi
+            for (y = 0; y < 5; y = y + 1) begin : g_lane
+                assign b[y + 5*((2*x + 3*y) % 5)] = rol64(a[x + 5*y] ^ d[x], rho(x + 5*y));
+            end
+        end
+        for (x = 0; x < 5; x = x + 1) begin : g_chi
+            for (y = 0; y < 5; y = y + 1) begin : g_lane
+                if (x == 0 && y == 0) begin : g_iota
+                    assign a_nxt[0] = b[0] ^ (~b[1] & b[2]) ^ rc;
+                end
+                else begin : g_plain
+                    assign a_nxt[x + 5*y] = b[x + 5*y] ^ (~b[(x + 1) % 5 + 5*y] & b[(x + 2) % 5 + 5*y]);
+                end
+            end
+        end
+    endgenerate
+
+    // -------------------------------------------------------------------------
+    // Control and state registers
+    // -------------------------------------------------------------------------
+    integer i;
     always @(posedge wb_clk_i or posedge wb_rst_i) begin
         if (wb_rst_i) begin
-            en <= 1'b0;
+            busy <= 1'b0;
             done <= 1'b0;
-            load <= 1'b0; 
+            rnd  <= 5'd0;
+            for (i = 0; i < NWORDS; i = i + 1)
+                st[i] <= 32'b0;
+        end
+        else if (busy) begin
+            for (i = 0; i < 25; i = i + 1)
+                {st[2*i + 1], st[2*i]} <= a_nxt[i];
+            rnd <= rnd + 5'd1;
+            if (rnd == 5'd23) begin
+                busy <= 1'b0;
+                done <= 1'b1;
+                rnd  <= 5'd0;
+            end
         end
         else begin
-            if (wb_cyc_i && wb_stb_i && wb_we_i) begin
-                if (wb_adr_i == EN_ADDR)
-                    en <= wb_dat_i[0];
-                else if (wb_adr_i == DN_ADDR)
-                    done <= wb_dat_i[0];
-                else if (wb_adr_i >= ST_ADDR)
-                    sbuf[sbuf_idx[5:0]] <= wb_dat_i;
-                //$display("SBUF INDEX: %d, DATA: %d", sbuf_idx[5:0], wb_dat_i);
+            if (clear)
+                for (i = 0; i < NWORDS; i = i + 1)
+                    st[i] <= 32'b0;
+            else if (st_wr)
+                st[word_idx] <= is_xor ? st[word_idx] ^ (wb_dat_i & sel_mask)
+                                       : (st[word_idx] & ~sel_mask) | (wb_dat_i & sel_mask);
+
+            if (start) begin
+                busy <= 1'b1;
+                done <= 1'b0;
             end
+            else if (bus_wr && is_status)
+                done <= wb_dat_i[0];
         end
     end
 
-    assign wb_dat_o = (wb_adr_i == DN_ADDR) ? {31'b0, done} : sbuf[sbuf_idx[5:0]];
-
+    // -------------------------------------------------------------------------
+    // Wishbone response: ack and read data one cycle after the request
+    // -------------------------------------------------------------------------
     always @(posedge wb_clk_i or posedge wb_rst_i) begin
         if (wb_rst_i) begin
-            scnt <= 5'b0;
-            srnd <= 5'b0;
+            ack   <= 1'b0;
+            rdata <= 32'b0;
         end
         else begin
-            if (en) begin
-                done <= 1'b0;
-                case (scnt)
-                    5'd0 : begin
-                        Aba <= {sbuf[ 1], sbuf[ 0]};
-                        Abe <= {sbuf[ 3], sbuf[ 2]};
-                        Abi <= {sbuf[ 5], sbuf[ 4]};
-                        Abo <= {sbuf[ 7], sbuf[ 6]};
-                        Abu <= {sbuf[ 9], sbuf[ 8]};
-                        Aga <= {sbuf[11], sbuf[10]};
-                        Age <= {sbuf[13], sbuf[12]};
-                        Agi <= {sbuf[15], sbuf[14]};
-                        Ago <= {sbuf[17], sbuf[16]};
-                        Agu <= {sbuf[19], sbuf[18]};
-                        Aka <= {sbuf[21], sbuf[20]};  
-                        Ake <= {sbuf[23], sbuf[22]};  
-                        Aki <= {sbuf[25], sbuf[24]};  
-                        Ako <= {sbuf[27], sbuf[26]};  
-                        Aku <= {sbuf[29], sbuf[28]};  
-                        Ama <= {sbuf[31], sbuf[30]};  
-                        Ame <= {sbuf[33], sbuf[32]};  
-                        Ami <= {sbuf[35], sbuf[34]};  
-                        Amo <= {sbuf[37], sbuf[36]};  
-                        Amu <= {sbuf[39], sbuf[38]};  
-                        Asa <= {sbuf[41], sbuf[40]};  
-                        Ase <= {sbuf[43], sbuf[42]};  
-                        Asi <= {sbuf[45], sbuf[44]}; 
-                        Aso <= {sbuf[47], sbuf[46]};  
-                        Asu <= {sbuf[49], sbuf[48]};
-                        scnt <= 5'd1;
-                    end
-                    5'd1 : begin
-                        BCa <= Aba ^ Aga ^ Aka ^ Ama ^ Asa;
-                        BCe <= Abe ^ Age ^ Ake ^ Ame ^ Ase;
-                        BCi <= Abi ^ Agi ^ Aki ^ Ami ^ Asi;
-                        BCo <= Abo ^ Ago ^ Ako ^ Amo ^ Aso;
-                        BCu <= Abu ^ Agu ^ Aku ^ Amu ^ Asu;
-                        scnt <= 5'd2;
-                    end
-                    5'd2 : begin
-                        Da   <= BCu ^ (BCe << 1) ^ (BCe >> (64-1));
-                        De   <= BCa ^ (BCi << 1) ^ (BCi >> (64-1));   
-                        Di   <= BCe ^ (BCo << 1) ^ (BCo >> (64-1));     
-                        DoDo <= BCi ^ (BCu << 1) ^ (BCu >> (64-1));    
-                        Du   <= BCo ^ (BCa << 1) ^ (BCa >> (64-1));
-                        scnt <= 5'd3;  
-                    end
-                    5'd3 : begin
-                        Aba <= Aba ^ Da;
-                        Age <= Age ^ De;
-                        Aki <= Aki ^ Di;
-                        Amo <= Amo ^ DoDo;
-                        Asu <= Asu ^ Du;  
-                        Abo <= Abo ^ DoDo;
-                        Agu <= Agu ^ Du;
-                        Aka <= Aka ^ Da;
-                        Ame <= Ame ^ De;
-                        Asi <= Asi ^ Di;
-                        Abe <= Abe ^ De;  
-                        Agi <= Agi ^ Di;   
-                        Ako <= Ako ^ DoDo; 
-                        Amu <= Amu ^ Du;
-                        Asa <= Asa ^ Da;
-                        Abu <= Abu ^ Du;
-                        Aga <= Aga ^ Da;
-                        Ake <= Ake ^ De;
-                        Ami <= Ami ^ Di;
-                        Aso <= Aso ^ DoDo;
-                        Abi <= Abi ^ Di;
-                        Ago <= Ago ^ DoDo;
-                        Aku <= Aku ^ Du;
-                        Ama <= Ama ^ Da;
-                        Ase <= Ase ^ De;
-                        scnt <= 5'd4;
-                    end
-                    5'd4 : begin
-                        BCa <= Aba;
-                        BCe <= (Age << 44) ^ (Age >> (64-44));
-                        BCi <= (Aki << 43) ^ (Aki >> (64-43));  
-                        BCo <= (Amo << 21) ^ (Amo >> (64-21));
-                        BCu <= (Asu << 14) ^ (Asu >> (64-14));
-                        scnt <= 5'd5;
-                    end
-                    5'd5 : begin
-                        Eba <= (BCa ^ ((~BCe) & BCi)) ^ round_constant[srnd];
-                        Ebe <= BCe ^ ((~BCi) & BCo);
-                        Ebi <= BCi ^ ((~BCo) & BCu);
-                        Ebo <= BCo ^ ((~BCu) & BCa);
-                        Ebu <= BCu ^ ((~BCa) & BCe);
-                        BCa <= (Abo << 28) ^ (Abo >> (64-28));     
-                        BCe <= (Agu << 20) ^ (Agu >> (64-20));     
-                        BCi <= (Aka <<  3) ^ (Aka >> (64-3 ));      
-                        BCo <= (Ame << 45) ^ (Ame >> (64-45));    
-                        BCu <= (Asi << 61) ^ (Asi >> (64-61));
-                        scnt <= 5'd6;
-                    end 
-                    5'd6 : begin
-                        Ega <= BCa ^ ((~BCe) & BCi);
-                        Ege <= BCe ^ ((~BCi) & BCo);
-                        Egi <= BCi ^ ((~BCo) & BCu);
-                        Ego <= BCo ^ ((~BCu) & BCa);
-                        Egu <= BCu ^ ((~BCa) & BCe);
-                        BCa <= (Abe << 1 ) ^ (Abe >> (64-1 ));
-                        BCe <= (Agi << 6 ) ^ (Agi >> (64-6 ));
-                        BCi <= (Ako << 25) ^ (Ako >> (64-25));
-                        BCo <= (Amu << 8 ) ^ (Amu >> (64-8 ));
-                        BCu <= (Asa << 18) ^ (Asa >> (64-18));
-                        scnt <= 5'd7;    
-                    end
-                    5'd7 : begin
-                        Eka <= BCa ^ ((~BCe) & BCi);
-                        Eke <= BCe ^ ((~BCi) & BCo);
-                        Eki <= BCi ^ ((~BCo) & BCu);
-                        Eko <= BCo ^ ((~BCu) & BCa);
-                        Eku <= BCu ^ ((~BCa) & BCe);
-                        BCa <= (Abu << 27) ^ (Abu >> (64-27));
-                        BCe <= (Aga << 36) ^ (Aga >> (64-36));
-                        BCi <= (Ake << 10) ^ (Ake >> (64-10));
-                        BCo <= (Ami << 15) ^ (Ami >> (64-15));
-                        BCu <= (Aso << 56) ^ (Aso >> (64-56));  
-                        scnt <= 5'd8;
-                    end
-                    5'd8 : begin
-                        Ema <= BCa ^ ((~BCe) & BCi);
-                        Eme <= BCe ^ ((~BCi) & BCo);
-                        Emi <= BCi ^ ((~BCo) & BCu);
-                        Emo <= BCo ^ ((~BCu) & BCa);
-                        Emu <= BCu ^ ((~BCa) & BCe);
-                        BCa <= (Abi << 62) ^ (Abi >> (64-62));     
-                        BCe <= (Ago << 55) ^ (Ago >> (64-55));     
-                        BCi <= (Aku << 39) ^ (Aku >> (64-39));     
-                        BCo <= (Ama << 41) ^ (Ama >> (64-41));     
-                        BCu <= (Ase << 2 ) ^ (Ase >> (64-2 )); 
-                        scnt <= 5'd9;
-                    end
-                    5'd9 : begin
-                        Esa <= BCa ^ ((~BCe) & BCi); 
-                        Ese <= BCe ^ ((~BCi) & BCo);
-                        Esi <= BCi ^ ((~BCo) & BCu);
-                        Eso <= BCo ^ ((~BCu) & BCa);
-                        Esu <= BCu ^ ((~BCa) & BCe);
-                        scnt <= 5'd10;
-                    end
-                    5'd10 : begin
-                        BCa <= Eba ^ Ega ^ Eka ^ Ema ^ Esa;
-                        BCe <= Ebe ^ Ege ^ Eke ^ Eme ^ Ese;
-                        BCi <= Ebi ^ Egi ^ Eki ^ Emi ^ Esi;
-                        BCo <= Ebo ^ Ego ^ Eko ^ Emo ^ Eso;
-                        BCu <= Ebu ^ Egu ^ Eku ^ Emu ^ Esu;
-                        scnt <= 5'd11;
-                    end
-                    5'd11 : begin
-                        Da   <= BCu ^ (BCe << 1) ^ (BCe >> (64-1));    
-                        De   <= BCa ^ (BCi << 1) ^ (BCi >> (64-1));    
-                        Di   <= BCe ^ (BCo << 1) ^ (BCo >> (64-1));    
-                        DoDo <= BCi ^ (BCu << 1) ^ (BCu >> (64-1));  
-                        Du   <= BCo ^ (BCa << 1) ^ (BCa >> (64-1)); 
-                        scnt <= 5'd12;
-                    end
-                    5'd12 : begin
-                        Eba <= Eba ^ Da;
-                        Ege <= Ege ^ De;
-                        Eki <= Eki ^ Di;
-                        Emo <= Emo ^ DoDo;
-                        Esu <= Esu ^ Du;
-                        Ebo <= Ebo ^ DoDo;
-                        Egu <= Egu ^ Du;
-                        Eka <= Eka ^ Da;
-                        Eme <= Eme ^ De;
-                        Esi <= Esi ^ Di;
-                        Ebe <= Ebe ^ De;    
-                        Egi <= Egi ^ Di;    
-                        Eko <= Eko ^ DoDo;  
-                        Emu <= Emu ^ Du;    
-                        Esa <= Esa ^ Da;
-                        Ebu <= Ebu ^ Du;
-                        Ega <= Ega ^ Da;
-                        Eke <= Eke ^ De;
-                        Emi <= Emi ^ Di;
-                        Eso <= Eso ^ DoDo;
-                        Ebi <= Ebi ^ Di;
-                        Ego <= Ego ^ DoDo;
-                        Eku <= Eku^ Du;
-                        Ema <= Ema ^ Da;
-                        Ese <= Ese ^ De;
-                        scnt <= 5'd13;
-                    end
-                    5'd13 : begin
-                        BCa <= Eba;
-                        BCe <= (Ege << 44) ^ (Ege >> (64-44));   
-                        BCi <= (Eki << 43) ^ (Eki >> (64-43));   
-                        BCo <= (Emo << 21) ^ (Emo >> (64-21));   
-                        BCu <= (Esu << 14) ^ (Esu >> (64-14));
-                        scnt <= 5'd14;   
-                    end
-                    5'd14 : begin
-                        Aba <= (BCa ^ ((~BCe) & BCi)) ^ round_constant[srnd+1];
-                        Abe <=  BCe ^ ((~BCi) & BCo);
-                        Abi <=  BCi ^ ((~BCo) & BCu);
-                        Abo <=  BCo ^ ((~BCu) & BCa);
-                        Abu <=  BCu ^ ((~BCa) & BCe);
-                        BCa <= (Ebo << 28) ^ (Ebo >> (64-28));   
-                        BCe <= (Egu << 20) ^ (Egu >> (64-20));   
-                        BCi <= (Eka << 3 ) ^ (Eka >> (64-3 ));     
-                        BCo <= (Eme << 45) ^ (Eme >> (64-45));   
-                        BCu <= (Esi << 61) ^ (Esi >> (64-61));  
-                        scnt <= 5'd15;
-                    end
-                    5'd15 : begin
-                        Aga <= BCa ^ ((~BCe) & BCi);
-                        Age <= BCe ^ ((~BCi) & BCo);
-                        Agi <= BCi ^ ((~BCo) & BCu);
-                        Ago <= BCo ^ ((~BCu) & BCa);
-                        Agu <= BCu ^ ((~BCa) & BCe);
-                        BCa <= (Ebe << 1 ) ^ (Ebe >> (64-1 ));    
-                        BCe <= (Egi << 6 ) ^ (Egi >> (64-6 ));    
-                        BCi <= (Eko << 25) ^ (Eko >> (64-25));  
-                        BCo <= (Emu << 8 ) ^ (Emu >> (64-8 ));    
-                        BCu <= (Esa << 18) ^ (Esa >> (64-18));
-                        scnt <= 5'd16;  
-                    end
-                    5'd16 : begin
-                        Aka <= BCa ^ ((~BCe) & BCi);
-                        Ake <= BCe ^ ((~BCi) & BCo);
-                        Aki <= BCi ^ ((~BCo) & BCu);
-                        Ako <= BCo ^ ((~BCu) & BCa);
-                        Aku <= BCu ^ ((~BCa) & BCe);
-                        BCa <= (Ebu << 27) ^ (Ebu >> (64-27));  
-                        BCe <= (Ega << 36) ^ (Ega >> (64-36));  
-                        BCi <= (Eke << 10) ^ (Eke >> (64-10));  
-                        BCo <= (Emi << 15) ^ (Emi >> (64-15)); 
-                        BCu <= (Eso << 56) ^ (Eso >> (64-56));
-                        scnt <= 5'd17;
-                    end
-                    5'd17 : begin            
-                        Ama <= BCa ^ ((~BCe) & BCi);
-                        Ame <= BCe ^ ((~BCi) & BCo);
-                        Ami <= BCi ^ ((~BCo) & BCu);
-                        Amo <= BCo ^ ((~BCu) & BCa);
-                        Amu <= BCu ^ ((~BCa) & BCe);
-                        BCa <= (Ebi << 62) ^ (Ebi >> (64-62));
-                        BCe <= (Ego << 55) ^ (Ego >> (64-55)); 
-                        BCi <= (Eku << 39) ^ (Eku >> (64-39));  
-                        BCo <= (Ema << 41) ^ (Ema >> (64-41));
-                        BCu <= (Ese << 2 ) ^ (Ese >> (64-2 ));
-                        scnt <= 5'd18;
-                    end
-                    5'd18 : begin
-                        Asa <= BCa ^ ((~BCe) & BCi);
-                        Ase <= BCe ^ ((~BCi) & BCo);
-                        Asi <= BCi ^ ((~BCo) & BCu);
-                        Aso <= BCo ^ ((~BCu) & BCa);
-                        Asu <= BCu ^ ((~BCa) & BCe);
-                        srnd <= srnd + 2;
-                        scnt <= 5'd19;
-                    end
-                    5'd19 : begin
-                        if (srnd == 5'd24) begin
-                            en <= 1'b0;
-                            srnd <= 5'd0;
-                            scnt <= 5'd0;
-                            load <= 1'b1;
-                        end
-                        else begin
-                            scnt <= 5'd1;   // Skip step 0 (loading into regs)
-                        end
-                    end
-                    default : scnt <= 5'd0;
-                endcase
-            end
-            else if (load) begin
-                {sbuf[ 1], sbuf[ 0]} <= Aba;
-                {sbuf[ 3], sbuf[ 2]} <= Abe;
-                {sbuf[ 5], sbuf[ 4]} <= Abi;
-                {sbuf[ 7], sbuf[ 6]} <= Abo;
-                {sbuf[ 9], sbuf[ 8]} <= Abu;
-                {sbuf[11], sbuf[10]} <= Aga;
-                {sbuf[13], sbuf[12]} <= Age;
-                {sbuf[15], sbuf[14]} <= Agi;
-                {sbuf[17], sbuf[16]} <= Ago;
-                {sbuf[19], sbuf[18]} <= Agu;
-                {sbuf[21], sbuf[20]} <= Aka;  
-                {sbuf[23], sbuf[22]} <= Ake;  
-                {sbuf[25], sbuf[24]} <= Aki;  
-                {sbuf[27], sbuf[26]} <= Ako;  
-                {sbuf[29], sbuf[28]} <= Aku;  
-                {sbuf[31], sbuf[30]} <= Ama;  
-                {sbuf[33], sbuf[32]} <= Ame;  
-                {sbuf[35], sbuf[34]} <= Ami;  
-                {sbuf[37], sbuf[36]} <= Amo;  
-                {sbuf[39], sbuf[38]} <= Amu;  
-                {sbuf[41], sbuf[40]} <= Asa;  
-                {sbuf[43], sbuf[42]} <= Ase;  
-                {sbuf[45], sbuf[44]} <= Asi; 
-                {sbuf[47], sbuf[46]} <= Aso;  
-                {sbuf[49], sbuf[48]} <= Asu;
-                load <= 1'b0;
-                done <= 1'b1;
+            ack <= wb_cyc_i && wb_stb_i;
+            if (bus_rd) begin
+                if (is_ctrl)
+                    rdata <= {31'b0, busy};
+                else if (is_status)
+                    rdata <= {30'b0, busy, done};
+                else if (is_state || is_xor)
+                    rdata <= st[word_idx];
+                else
+                    rdata <= 32'b0;
             end
         end
     end
+
+    assign wb_ack_o = ack;
+    assign wb_dat_o = rdata;
 
 endmodule
