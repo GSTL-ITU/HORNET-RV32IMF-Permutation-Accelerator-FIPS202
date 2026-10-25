@@ -11,6 +11,12 @@
 #define KECCAK_STATUS_OFS  0x010u  /* R: bit0 done, bit1 busy; W: bit0 -> done */
 #define KECCAK_STATE_OFS   0x020u  /* 50 words, R/W */
 #define KECCAK_XOR_OFS     0x120u  /* 50 words, write XORs into the state */
+/* DMA registers, keccak_accelerator_dma_wb only. Build with -DKECCAK_DMA to use them. */
+#define KECCAK_DMA_ADDR_OFS   0x200u  /* RAM address (word aligned) */
+#define KECCAK_DMA_LEN_OFS    0x204u  /* length in bytes */
+#define KECCAK_DMA_RATE_OFS   0x208u  /* rate in bytes for ABSORB/SQUEEZE */
+#define KECCAK_DMA_CTRL_OFS   0x20Cu  /* W: 1 ABSORB, 2 SQUEEZE, 3 LOAD, 4 STORE; R: bit0 busy */
+#define KECCAK_DMA_STATUS_OFS 0x210u  /* R: bit0 done, bit1 busy, bit2 error; W: bit0 -> done */
 
 /* Don't change parameters below this line */
 #if   (KYBER_K == 2)

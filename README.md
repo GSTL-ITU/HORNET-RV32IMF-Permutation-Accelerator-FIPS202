@@ -28,10 +28,44 @@ Software modifications are made so the core sends the data through the accelerat
 State/XOR writes are ignored while busy; byte enables (`wb_sel_i`) are honoured.
 The C driver is in `test/ml-kem-kyber/fips202.c`; register offsets are in `test/ml-kem-kyber/params.h`.
 
+### DMA version
+
+Two SoC tops exist side by side in `source/sources_1/imports/src/`:
+
+| Top                    | Accelerator                 | Description |
+| :--------------------- | :-------------------------- | :---------- |
+| `barebones_wb_top`     | `keccak_accelerator_wb`     | CPU moves every word over the bus |
+| `barebones_wb_top_dma` | `keccak_accelerator_dma_wb` | Accelerator has a Wishbone master and moves data to/from RAM itself |
+
+`keccak_accelerator_dma_wb` wraps the unchanged `keccak_accelerator_wb` (same register map at
+`0x000 - 0x1E7`, so non-DMA firmware runs on it unmodified) and adds a DMA engine. Its master port
+shares memory port 1 with the core's data bus; the core always has priority, so core timing is
+unchanged and the DMA uses the cycles in which the core does not access RAM (1 word per cycle).
+
+| Offset  | Name       | Access | Description |
+| :------ | :--------- | :----- | :---------- |
+| `0x200` | DMA_ADDR   | R/W    | RAM byte address (word aligned) |
+| `0x204` | DMA_LEN    | R/W    | length in bytes |
+| `0x208` | DMA_RATE   | R/W    | rate in bytes (multiple of 4, 4..200) for ABSORB/SQUEEZE |
+| `0x20C` | DMA_CTRL   | W      | command: 1 ABSORB, 2 SQUEEZE, 3 LOAD, 4 STORE (ignored while busy) |
+|         |            | R      | bit0 = busy |
+| `0x210` | DMA_STATUS | R      | bit0 = done (cleared on start), bit1 = busy, bit2 = error |
+|         |            | W      | bit0 is written into done |
+
+- **ABSORB**: XOR `LEN` bytes from RAM into the state from byte 0, permuting after every full `RATE` block.
+  A trailing partial block is absorbed but not permuted; padding is done by software through the XOR window.
+- **SQUEEZE**: repeat { permute; write min(`RATE`, remaining) bytes to RAM }.
+- **LOAD / STORE**: copy the first `LEN` (<= 200) state bytes from / to RAM.
+
+Partial words use byte enables, so RAM past `LEN` is never written. While the DMA is busy, CPU
+accesses to `0x000 - 0x1FF` are acknowledged but ignored. A rejected command (unknown command or bad
+`RATE`) sets done + error. The driver (`-DKECCAK_DMA`) uses DMA for word-aligned buffers and falls back
+to register access otherwise.
+
 ## Project Structure
 
 ```
-├─ keccak_test/         # Unit test for the accelerator (RTL vs reference C)
+├─ keccak_test/         # Unit tests for both accelerators (RTL vs reference C)
 ├─ rom_gen/             # ROM generator
 ├─ source/              # RTL source for Hornet Core and peripherals
 ├─ test/                # PQC source codes and makefiles
@@ -52,22 +86,32 @@ The C driver is in `test/ml-kem-kyber/fips202.c`; register offsets are in `test/
 
 To compile, build and run the PQC source codes in the Hornet bare-metal configuration, simply run:
 ```sh
-bash cbr.sh                # with the accelerator
+bash cbr.sh                # accelerator, barebones_wb_top
+DMA=1 bash cbr.sh          # accelerator with DMA, barebones_wb_top_dma
 KECCAK_SW=1 bash cbr.sh    # software Keccak reference
 ```
+`DMA=1` selects both the firmware driver (`make build DMA=1` in `test/ml-kem-kyber/test`) and the
+simulated top (`make run DMA=1` in `verilator/`, built into `obj_dir_dma`). A DMA firmware image needs the
+DMA top; the non-DMA firmware runs on either top. The testbench gives up after 100M cycles (`TEST TIMEOUT`).
 The testbench prints the cycle number of every debug-interface write and stops on `P` (pass) or `F` (fail).
 Before the KEM tests the firmware runs FIPS 202 known-answer tests (fails with code `H` = 72), and the
 Kyber keypair/ciphertext/shared secret are compared against a host run with the software Keccak
 (`gen_kat.c` -> `kyber_kat.h`, fails with code `K` = 75).
 
-To run the accelerator unit test, use the makefile in `keccak_test`:
+To run the accelerator unit tests, use the makefile in `keccak_test`:
 ```sh
 cd keccak_test
-make
+make            # both tests
+make test       # keccak_accelerator_wb only
+make test_dma   # keccak_accelerator_dma_wb only
 ```
-This simulates `source/sources_1/imports/src/keccak_accelerator_wb.v` directly and compares it against
-the reference C permutation: single permutation, back-to-back permutations, the clear command,
-absorbing via the XOR window with byte-enable writes, and writes during a busy permutation.
+Both simulate the RTL from `source/sources_1/imports/src/` directly and compare it against the reference
+C permutation.
+- `test`: single permutation, back-to-back permutations, the clear command, absorbing via the XOR window
+  with byte-enable writes, and writes during a busy permutation.
+- `test_dma`: a RAM model with pseudo-random stalls; multi-block ABSORB with tail, ABSORB of an exact
+  multiple of the rate, multi-block SQUEEZE with a partial last word (bytes past the end must stay
+  untouched), LOAD/STORE, rejected commands, and CPU accesses while the DMA is busy.
 
 ### Contact
 Ali Barış Bozoğlu: [bozoglu20@itu.edu.tr](mailto:bozoglu20@itu.edu.tr) - [GitHub](https://github.com/alibarisbozoglu)

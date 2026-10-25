@@ -11,6 +11,11 @@ ifeq ($(KECCAK_SW),1)
 CCFLAGS += -DKECCAK_SW
 endif
 
+# `make build DMA=1` uses the accelerator's DMA engine (needs barebones_wb_top_dma)
+ifeq ($(DMA),1)
+CCFLAGS += -DKECCAK_DMA
+endif
+
 # All Kyber core submodules located one directory up
 KYBER_SRC = ../cbd.c ../fips202.c ../indcpa.c ../kem.c ../ntt.c ../poly.c ../polyvec.c ../randombytes.c ../reduce.c ../symmetric-shake.c ../verify.c
 

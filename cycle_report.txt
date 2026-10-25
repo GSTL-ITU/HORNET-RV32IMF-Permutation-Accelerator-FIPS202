@@ -1,9 +1,20 @@
 KYBER (Kyber768, NTESTS = 1, test_keys(), 40 MHz Verilator simulation)
 
     Cycle numbers are printed by barebones_top_tb.v ("cycle N : code").
-    Both builds use the same firmware, seed and SoC; only the Keccak implementation differs.
+    All builds use the same test firmware and seed; only the Keccak implementation differs.
 
-    with accelerator (bash cbr.sh):
+    with accelerator + DMA (DMA=1 bash cbr.sh, barebones_wb_top_dma):
+
+            cycle   22418 :    40 - start (test_keys)
+            cycle  700201 :    41 - keypair generation end
+            cycle 1604984 :    42 - encapsulation end
+            cycle 2880172 :    43 - decapsulation end
+
+        keypair generation :   677,783 cycles   (2.82x)
+        encapsulation      :   904,783 cycles   (2.40x)
+        decapsulation      : 1,275,188 cycles   (1.95x)
+
+    with accelerator (bash cbr.sh, barebones_wb_top):
 
             cycle   54064 :    40 - start (test_keys)
             cycle  811934 :    41 - keypair generation end
@@ -26,6 +37,8 @@ KYBER (Kyber768, NTESTS = 1, test_keys(), 40 MHz Verilator simulation)
         decapsulation      : 2,492,148 cycles
 
     Keccak-f[1600] on the accelerator: 24 cycles per permutation (keccak_test).
+    Speedups are relative to the software reference. All 130 DMA-eligible transfers in the DMA run
+    (FIPS 202 KATs + test_keys) were word aligned, so none fell back to register access.
 
     Note: the previous report (1.75M / 2.40M / 3.27M with accelerator) is invalid. The driver never
     read the permuted state back, so the "accelerated" run did not compute FIPS 202 at all.

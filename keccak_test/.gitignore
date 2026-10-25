@@ -1,4 +1,8 @@
 test_data_out_rtl.hex
 test_data_out_sw.hex
+dma_out_rtl.hex
+dma_out_sw.hex
 rtl/obj_dir
+rtl/obj_dir_dma
 sw/test_sw
+sw/dma_test_sw

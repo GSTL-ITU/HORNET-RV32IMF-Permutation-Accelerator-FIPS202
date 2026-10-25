@@ -1,3 +1,55 @@
+2026-10-23  DMA version of the Keccak accelerator
+=====================================================================
+
+New files
+---------
+* source/sources_1/imports/src/keccak_accelerator_dma_wb.v: wraps the unchanged
+  keccak_accelerator_wb and adds a DMA engine with a Wishbone master port. Commands:
+  ABSORB (XOR from RAM, permute after each full rate block), SQUEEZE (permute + write a
+  block to RAM, repeated), LOAD/STORE (copy state <-> RAM). Pipelined, 1 word per cycle;
+  partial words via byte enables; rejected commands / bus errors set DONE + ERROR.
+  Registers at 0x200-0x210, inner map unchanged (old firmware runs on it as is).
+* source/sources_1/imports/src/barebones_wb_top_dma.v: copy of barebones_wb_top with the
+  DMA accelerator. Memory port 1 is shared between the core data bus and the DMA master
+  with fixed core priority, so the core's timing is unchanged (the core ignores ack and
+  expects data one cycle after a request, so it must never be stalled by the DMA).
+  barebones_wb_top.v is untouched.
+* keccak_test/rtl/keccak_accelerator_dma_wb_tb.v + keccak_test/sw/dma_test.c: DMA unit
+  test with a stalling RAM model (5 cases, see README). Outputs were also cross-checked
+  once against Python hashlib (SHAKE256, SHAKE128, SHA3-256 shaped cases).
+
+Changes
+-------
+* fips202.c / params.h: -DKECCAK_DMA driver path. Word-aligned buffers use DMA ABSORB /
+  SQUEEZE, acc_load/acc_store use LOAD/STORE; unaligned buffers fall back to register
+  access. Compiler "memory" barriers around each DMA command.
+* Build options: `DMA=1` for cbr.sh, the firmware Makefile (-DKECCAK_DMA) and the
+  Verilator Makefile (+define+KECCAK_DMA, separate obj_dir_dma).
+  keccak_test: `make` runs both unit tests, `make test` / `make test_dma` run one.
+* barebones_top_tb.v: selects barebones_wb_top_dma with +define+KECCAK_DMA; 100M-cycle
+  timeout (TEST TIMEOUT), e.g. for a DMA firmware image on the non-DMA top.
+
+Verification
+------------
+* keccak_test: both unit tests pass.
+* SoC: default flow unchanged (identical cycle counts). DMA flow passes the FIPS 202 KATs
+  and the Kyber cross-check. The non-DMA firmware on the DMA top passes with identical
+  cycle counts.
+
+Results (Kyber768, cycles)
+--------------------------
+                      software Keccak    accelerator    accelerator + DMA
+  keypair generation      1,914,451          757,870        677,783 (2.82x)
+  encapsulation           2,170,200          986,550        904,783 (2.40x)
+  decapsulation           2,492,148        1,343,837      1,275,188 (1.95x)
+  The remaining time is mostly polynomial arithmetic (NTT etc.), not Keccak.
+
+Not done
+--------
+* Completion interrupt (still polling).
+* Vivado synthesis/timing of the new RTL (Verilator only).
+
+
 2026-10-22  Keccak accelerator rework, driver fixes and verification
 =====================================================================
 
@@ -76,6 +128,5 @@ Not done (needs decisions / changes outside this scope)
 -------------------------------------------------------
 * Completion interrupt: needs an interconnect/top-level change to route it to fast_irq.
   Polling is cheap at 24 cycles.
-* DMA (Wishbone master port reading blocks from RAM): needs bus arbitration in
-  barebones_wb_top.v. Bus transfers are now the dominant Keccak cost.
+* DMA: done in a separate top, see the 2026-10-23 entry above.
 * Vivado synthesis/timing of the new RTL was not run here (Verilator only).

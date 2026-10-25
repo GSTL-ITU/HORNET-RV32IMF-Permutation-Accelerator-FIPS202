@@ -352,6 +352,9 @@ static void KeccakF1600_StatePermute(uint64_t state[25])
  * Keccak accelerator driver (keccak_accelerator_wb on the Wishbone bus).
  * The state lives in the accelerator; 64-bit lane i is word 2i (low) and 2i+1 (high),
  * i.e. byte offset n of the Keccak state is byte n of the word window.
+ *
+ * With -DKECCAK_DMA (requires keccak_accelerator_dma_wb / barebones_wb_top_dma) word-aligned
+ * buffers are moved by the accelerator's DMA engine; unaligned ones fall back to register access.
  */
 #define KECCAK_CTRL   (*(volatile uint32_t *)(KECCAK_BASE_ADDR + KECCAK_CTRL_OFS))
 #define KECCAK_STATUS (*(volatile uint32_t *)(KECCAK_BASE_ADDR + KECCAK_STATUS_OFS))
@@ -374,6 +377,44 @@ static void acc_clear(void)
   KECCAK_CTRL = KECCAK_CTRL_CLEAR;
 }
 
+#ifdef KECCAK_DMA
+#define KECCAK_DMA_ADDR   (*(volatile uint32_t *)(KECCAK_BASE_ADDR + KECCAK_DMA_ADDR_OFS))
+#define KECCAK_DMA_LEN    (*(volatile uint32_t *)(KECCAK_BASE_ADDR + KECCAK_DMA_LEN_OFS))
+#define KECCAK_DMA_RATE   (*(volatile uint32_t *)(KECCAK_BASE_ADDR + KECCAK_DMA_RATE_OFS))
+#define KECCAK_DMA_CTRL   (*(volatile uint32_t *)(KECCAK_BASE_ADDR + KECCAK_DMA_CTRL_OFS))
+#define KECCAK_DMA_STATUS (*(volatile uint32_t *)(KECCAK_BASE_ADDR + KECCAK_DMA_STATUS_OFS))
+
+#define KECCAK_DMA_ABSORB  1u
+#define KECCAK_DMA_SQUEEZE 2u
+#define KECCAK_DMA_LOAD    3u
+#define KECCAK_DMA_STORE   4u
+
+#define DMA_ALIGNED(p) ((((uintptr_t)(p)) & 3) == 0)
+
+/* Run one DMA command and wait for it. The "memory" clobbers make the compiler flush pending
+   stores to the buffer before the DMA reads it, and reload it after the DMA wrote it. */
+static void acc_dma(uint32_t cmd, const void *addr, size_t len, unsigned int r)
+{
+  __asm__ volatile ("" ::: "memory");
+  KECCAK_DMA_ADDR = (uint32_t)(uintptr_t)addr;
+  KECCAK_DMA_LEN  = len;
+  KECCAK_DMA_RATE = r;
+  KECCAK_DMA_CTRL = cmd;
+  while(!(KECCAK_DMA_STATUS & KECCAK_STATUS_DONE))
+    ;
+  __asm__ volatile ("" ::: "memory");
+}
+
+static void acc_load(const uint64_t s[25])
+{
+  acc_dma(KECCAK_DMA_LOAD, s, 200, 0);
+}
+
+static void acc_store(uint64_t s[25])
+{
+  acc_dma(KECCAK_DMA_STORE, s, 200, 0);
+}
+#else
 static void acc_load(const uint64_t s[25])
 {
   unsigned int i;
@@ -389,6 +430,7 @@ static void acc_store(uint64_t s[25])
   for(i=0;i<25;i++)
     s[i] = (uint64_t)KECCAK_STATE[2*i] | ((uint64_t)KECCAK_STATE[2*i+1] << 32);
 }
+#endif
 
 /* XOR inlen bytes into the state starting at byte offset pos */
 static void acc_xor_bytes(unsigned int pos, const uint8_t *in, size_t inlen)
@@ -426,13 +468,23 @@ static void acc_absorb_once(unsigned int r, const uint8_t *in, size_t inlen, uin
   const uint8_t pad = 0x80;
 
   acc_clear();
-  while(inlen >= r) {
-    acc_xor_bytes(0, in, r);
-    acc_permute();
-    in += r;
-    inlen -= r;
+#ifdef KECCAK_DMA
+  if(DMA_ALIGNED(in)) {
+    /* permutes after every full block and absorbs the tail */
+    acc_dma(KECCAK_DMA_ABSORB, in, inlen, r);
+    inlen %= r;
   }
-  acc_xor_bytes(0, in, inlen);
+  else
+#endif
+  {
+    while(inlen >= r) {
+      acc_xor_bytes(0, in, r);
+      acc_permute();
+      in += r;
+      inlen -= r;
+    }
+    acc_xor_bytes(0, in, inlen);
+  }
   acc_xor_bytes(inlen, &p, 1);
   acc_xor_bytes(r-1, &pad, 1);
 }
@@ -444,6 +496,12 @@ static void acc_hash(uint8_t *out, size_t outlen, unsigned int r,
   size_t n;
 
   acc_absorb_once(r, in, inlen, p);
+#ifdef KECCAK_DMA
+  if(DMA_ALIGNED(out)) {
+    acc_dma(KECCAK_DMA_SQUEEZE, out, outlen, r);
+    return;
+  }
+#endif
   while(outlen) {
     acc_permute();
     n = outlen < r ? outlen : r;
@@ -638,6 +696,12 @@ static void keccak_squeezeblocks(uint8_t *out,
   if(!nblocks)
     return;
   acc_load(s);
+#ifdef KECCAK_DMA
+  if(DMA_ALIGNED(out)) {
+    acc_dma(KECCAK_DMA_SQUEEZE, out, nblocks*r, r);
+    nblocks = 0;
+  }
+#endif
   while(nblocks) {
     acc_permute();
     acc_read_bytes(out, r);

@@ -8,7 +8,12 @@ reg meip_i;
 reg [15:0] fast_irq_i;
 integer i;
 
+// +define+KECCAK_DMA selects the SoC with the DMA-capable Keccak accelerator
+`ifdef KECCAK_DMA
+barebones_wb_top_dma uut(
+`else
 barebones_wb_top uut(
+`endif
     .rst_ni(rst_ni), 
     .clk_i(clk_i), 
     .meip_i(meip_i), 
@@ -49,6 +54,15 @@ end
 
 wire debug_wr = uut.debug_if_inst.wb_cyc_i && uut.debug_if_inst.wb_stb_i && uut.debug_if_inst.wb_we_i;
 wire [31:0] debug_dat = uut.debug_if_inst.wb_dat_i;
+
+// Give up if the firmware never reports (e.g. a DMA build running on the non-DMA SoC)
+localparam MAX_CYCLES = 64'd100_000_000;
+always @(posedge clk_i) begin
+    if (cycle == MAX_CYCLES) begin
+        $display("TEST TIMEOUT after %0d cycles", cycle);
+        $finish;
+    end
+end
 
 always @(posedge clk_i) begin
     if (rst_ni && debug_wr) begin
