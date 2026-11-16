@@ -1,13 +1,24 @@
 # HORNET-RV32IMF with Permutation Accelerator for Keccak (FIPS202)
 
-This repository contains a hardware/software environment for the Keccak-f[1600] permutation accelerator (FIPS 202 standard) integrated with the HORNET-RV32IMF processor architecture.
+This repository contains a hardware/software environment for the Keccak-f[1600] permutation accelerator (FIPS 202 standard) for the HORNET-RV32IMF processor.
+The accelerator works with both generations of the core, which are included as submodules:
 
-It includes full RTL hardware designs, C reference code, unit testbenches, and automated build verification scripts using Verilator.
+| Submodule                | Upstream branch | Bus                      | Accelerators |
+| :----------------------- | :-------------- | :----------------------- | :----------- |
+| `HORNET-RV32IMF/`        | `main`          | AXI4-Lite                | `keccak_accelerator_axil`, `keccak_accelerator_dma_axil` |
+| `HORNET-RV32IMF-legacy/` | `legacy`        | Wishbone                 | `legacy_keccak_accelerator_wb`, `legacy_keccak_accelerator_dma_wb` |
 
-The added accelerator `keccak_accelerator_wb` is connected only via the Wishbone bus interface (slave 4, `0x1000_9000 - 0x1000_9FFF`). No modifications are made inside the core itself.
+No modifications are made inside the cores or the submodules; the accelerators are added as bus slaves (and, for DMA, a bus master) in SoC tops that live in this repository.
 Software modifications are made so the core sends the data through the accelerator address range.
 
-**STATUS:** Only ML-KEM (Kyber768) has been tested so far.
+```sh
+git clone --recurse-submodules <this repo>
+# or, in an existing clone:
+git submodule update --init
+```
+
+**STATUS:** Only ML-KEM (Kyber768) has been tested so far, on the legacy core. On the new core the
+accelerators are verified in simulation (see `changes.log`); the Kyber firmware is not ported yet.
 
 ## Accelerator
 
@@ -15,6 +26,12 @@ Software modifications are made so the core sends the data through the accelerat
 - The 1600-bit state lives inside the accelerator and is directly readable/writable over the bus.
   Software absorbs by XORing into the state and squeezes by reading it, so one-shot hashes
   (`sha3_256`, `sha3_512`, `shake128`, `shake256`) never copy the state to RAM.
+- Same register map on both cores (offsets from the accelerator base):
+
+| Core   | Base address  | SoC top |
+| :----- | :------------ | :------ |
+| legacy | `0x1000_9000` | `soc/legacy/barebones_wb_top_keccak.v` (slave 4, `0x1000_9000 - 0x1000_9FFF`) |
+| main   | `0x6000_0000` | `soc/hornet/hornet_soc_keccak.v` (4 KiB in the external AXI range, parameter `KECCAK_BASE`) |
 
 | Offset          | Name   | Access | Description |
 | :-------------- | :----- | :----- | :---------- |
@@ -25,22 +42,25 @@ Software modifications are made so the core sends the data through the accelerat
 | `0x020 - 0x0E7` | STATE  | R/W    | 50 words; lane *i* = `{word 2i+1, word 2i}` (little-endian) |
 | `0x120 - 0x1E7` | XOR    | W      | 50 words; written data is XORed into the state (reads return STATE) |
 
-State/XOR writes are ignored while busy; byte enables (`wb_sel_i`) are honoured.
+State/XOR writes are ignored while busy; byte enables (`wb_sel_i` / `wstrb`) are honoured.
 The C driver is in `test/ml-kem-kyber/fips202.c`; register offsets are in `test/ml-kem-kyber/params.h`.
 
 ### DMA version
 
-Two SoC tops exist side by side in `source/sources_1/imports/src/`:
+| Top (legacy, `soc/legacy/`)   | Top (main, `soc/hornet/`) | Accelerator | Description |
+| :---------------------------- | :------------------------ | :---------- | :---------- |
+| `barebones_wb_top_keccak`     | `hornet_soc_keccak`       | `legacy_keccak_accelerator_wb` / `keccak_accelerator_axil` | CPU moves every word over the bus |
+| `barebones_wb_top_keccak_dma` | `hornet_soc_keccak_dma`   | `legacy_keccak_accelerator_dma_wb` / `keccak_accelerator_dma_axil` | Accelerator has a bus master and moves data to/from RAM itself |
 
-| Top                    | Accelerator                 | Description |
-| :--------------------- | :-------------------------- | :---------- |
-| `barebones_wb_top`     | `keccak_accelerator_wb`     | CPU moves every word over the bus |
-| `barebones_wb_top_dma` | `keccak_accelerator_dma_wb` | Accelerator has a Wishbone master and moves data to/from RAM itself |
+The DMA accelerators keep the same register map at `0x000 - 0x1E7` (so non-DMA firmware runs on them
+unmodified) and add a DMA engine. The master port shares memory with the core's data bus; the core
+always has priority, so core timing is unchanged and the DMA uses the cycles in which the core does not
+access memory (1 word per cycle).
 
-`keccak_accelerator_dma_wb` wraps the unchanged `keccak_accelerator_wb` (same register map at
-`0x000 - 0x1E7`, so non-DMA firmware runs on it unmodified) and adds a DMA engine. Its master port
-shares memory port 1 with the core's data bus; the core always has priority, so core timing is
-unchanged and the DMA uses the cycles in which the core does not access RAM (1 word per cycle).
+- legacy: the Wishbone master shares memory port 1 with the core.
+- main: the AXI4-Lite master reaches IMEM (port B) and DMEM through `soc/hornet/axil_mem_port.v` in
+  `hornet_soc_dma` (a copy of `hornet_soc` with that one addition). Buffers may be in DMEM or in IMEM
+  (e.g. `.rodata`); other addresses answer DECERR and the command ends with ERROR set.
 
 | Offset  | Name       | Access | Description |
 | :------ | :--------- | :----- | :---------- |
@@ -59,21 +79,42 @@ unchanged and the DMA uses the cycles in which the core does not access RAM (1 w
 
 Partial words use byte enables, so RAM past `LEN` is never written. While the DMA is busy, CPU
 accesses to `0x000 - 0x1FF` are acknowledged but ignored. A rejected command (unknown command or bad
-`RATE`) sets done + error. The driver (`-DKECCAK_DMA`) uses DMA for word-aligned buffers and falls back
-to register access otherwise.
+`RATE`) sets done + error; on the main core an error response on the master port does too, and DONE is
+only set once every write has been acknowledged. The driver (`-DKECCAK_DMA`) uses DMA for word-aligned
+buffers and falls back to register access otherwise.
+
+On the main core the accelerator's DONE (DMA DONE for the DMA version) is also ORed into `irq_i[0]`
+(fast interrupt 2).
 
 ## Project Structure
 
 ```
-├─ keccak_test/         # Unit tests for both accelerators (RTL vs reference C)
-├─ rom_gen/             # ROM generator
-├─ source/              # RTL source for Hornet Core and peripherals
-├─ test/                # PQC source codes and makefiles
-├─ verilator/           # Verilator build files
-├─ cbr.sh               # Auto -build & test- script
-├─ cycle_report.txt     # Cycle count reports
-└─ changes.log          # Change log
+├─ HORNET-RV32IMF/          # submodule: HORNET-RV32IMF, main branch (AXI4-Lite SoC)
+├─ HORNET-RV32IMF-legacy/   # submodule: HORNET-RV32IMF, legacy branch (Wishbone SoC)
+├─ rtl/                     # Keccak accelerators
+│  ├─ keccak_accelerator_core.v           # permutation + register file (shared by the AXI versions)
+│  ├─ keccak_accelerator_axil.v           # main core, AXI4-Lite slave
+│  ├─ keccak_accelerator_dma_axil.v       # main core, AXI4-Lite slave + DMA master
+│  ├─ legacy_keccak_accelerator_wb.v      # legacy core, Wishbone slave
+│  ├─ legacy_keccak_accelerator_dma_wb.v  # legacy core, Wishbone slave + DMA master
+│  └─ lint.vlt                            # Verilator lint waivers
+├─ soc/
+│  ├─ hornet/               # main core: hornet_soc_keccak(_dma), hornet_soc_dma, axil_mem_port
+│  └─ legacy/               # legacy core: barebones_wb_top_keccak(_dma), testbench, debug interface
+├─ keccak_test/             # Unit tests for the accelerators (RTL vs reference C)
+├─ rom_gen/                 # ROM generator (legacy core)
+├─ test/                    # PQC source codes and makefiles
+├─ verilator/               # Verilator build files
+├─ cbr.sh                   # Auto -build & test- script
+├─ cycle_report.txt         # Cycle count reports
+└─ changes.log              # Change log
 ```
+
+The SoC tops reuse the submodules' RTL as is. For the legacy core, compile
+`HORNET-RV32IMF-legacy/source/sources_1/imports/src/*.v` except `fpga_top.v`, `barebones_wb_top.v` and
+`debug_interface_wb.v`, plus `rtl/legacy_*.v` and `soc/legacy/*.v`. For the main core, compile
+`HORNET-RV32IMF/rtl/{core,fpu,soc}/*.v` plus `rtl/keccak_accelerator_*.v` and `soc/hornet/*.v`.
+`hornet_soc_keccak` and `hornet_soc_keccak_dma` have the same parameters and ports as `hornet_soc`.
 
 ## Prerequisites
 
@@ -83,6 +124,10 @@ to register access otherwise.
 - make
 
 ## Usage and Verification
+
+> **Note:** `cbr.sh`, `verilator/Makefile`, `keccak_test/Makefile` and `test/ml-kem-kyber/test/Makefile`
+> still refer to the old `source/` directory and the old module names. They are not migrated to the
+> layout above yet, so the commands below do not work until then.
 
 To compile, build and run the PQC source codes in the Hornet bare-metal configuration, simply run:
 ```sh
@@ -105,8 +150,7 @@ make            # both tests
 make test       # keccak_accelerator_wb only
 make test_dma   # keccak_accelerator_dma_wb only
 ```
-Both simulate the RTL from `source/sources_1/imports/src/` directly and compare it against the reference
-C permutation.
+Both simulate the accelerator RTL directly and compare it against the reference C permutation.
 - `test`: single permutation, back-to-back permutations, the clear command, absorbing via the XOR window
   with byte-enable writes, and writes during a busy permutation.
 - `test_dma`: a RAM model with pseudo-random stalls; multi-block ABSORB with tail, ABSORB of an exact
@@ -117,7 +161,7 @@ C permutation.
 Ali Barış Bozoğlu: [bozoglu20@itu.edu.tr](mailto:bozoglu20@itu.edu.tr) - [GitHub](https://github.com/alibarisbozoglu)
 
 
-**Original README for more info:**
+**Original README of the legacy core (see the submodules for the current versions):**
 
 ---
 

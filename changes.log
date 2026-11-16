@@ -1,3 +1,77 @@
+2026-11-16  Repository split: HORNET submodules, accelerators for both cores
+=====================================================================
+
+The HORNET-RV32IMF used so far became the upstream `legacy` branch; the new `main` branch is a
+rewritten core with an AXI4-Lite SoC. Both are now submodules and are not modified.
+
+Layout
+------
+* HORNET-RV32IMF/         submodule, GSTL-ITU/HORNET-RV32IMF main   (59412a9)
+* HORNET-RV32IMF-legacy/  submodule, GSTL-ITU/HORNET-RV32IMF legacy (a76e11f)
+* source/ removed. It was the legacy SoC plus our changes; the unchanged files are in the legacy
+  submodule, fpga_top.v / the .xdc differed only because upstream moved on (bootloader removal).
+  Our files moved (git mv, history kept) and their modules were renamed so they can be compiled
+  next to the submodule sources:
+    keccak_accelerator_wb.v     -> rtl/legacy_keccak_accelerator_wb.v      (legacy_keccak_accelerator_wb)
+    keccak_accelerator_dma_wb.v -> rtl/legacy_keccak_accelerator_dma_wb.v  (legacy_keccak_accelerator_dma_wb)
+    barebones_wb_top.v          -> soc/legacy/barebones_wb_top_keccak.v    (barebones_wb_top_keccak)
+    barebones_wb_top_dma.v      -> soc/legacy/barebones_wb_top_keccak_dma.v (barebones_wb_top_keccak_dma)
+    debug_interface_wb.v        -> soc/legacy/debug_interface_trace_wb.v   (debug_interface_trace_wb)
+    barebones_top_tb.v          -> soc/legacy/barebones_top_tb.v           (instantiates the renamed tops)
+  The generated memory_init_tb.mem was dropped (rebuilt by the firmware flow).
+
+New RTL (main core)
+-------------------
+* rtl/keccak_accelerator_core.v: permutation + register file of legacy_keccak_accelerator_wb behind a
+  plain request port, active-low reset. Shared by both AXI versions.
+* rtl/keccak_accelerator_axil.v: AXI4-Lite slave, same register map. One transaction at a time,
+  response one cycle after acceptance, always OKAY. irq_o = DONE.
+* rtl/keccak_accelerator_dma_axil.v: same DMA engine and register map as the legacy DMA version, with
+  an AXI4-Lite master: several reads/writes outstanding, AW and W may be accepted in different cycles,
+  valid never drops before its handshake. Differences to the legacy version: SLVERR/DECERR on the
+  master port sets ERROR and ends the command at the next block boundary; DONE waits for all write
+  responses; the permutation wait uses the core's busy flag (no polling over the inner bus).
+* soc/hornet/hornet_soc_keccak.v: stock hornet_soc + accelerator. A 2-slot axil_xbar on the external
+  port puts the accelerator at KECCAK_BASE (default 0x6000_0000, 4 KiB) and passes the rest of
+  0x4000_0000 - 0x7FFF_FFFF to m_axi_* (0x4000_0000 stays free for external IP, as in upstream soc_tb).
+  Same parameters and ports as hornet_soc. DONE is ORed into irq_i[0] (fast interrupt 2).
+* soc/hornet/hornet_soc_dma.v: copy of hornet_soc (main @ 59412a9) with one addition, an AXI4-Lite
+  slave port into IMEM port B and DMEM (soc/hornet/axil_mem_port.v). The core has priority and is
+  never stalled; responses to data_router are gated so DMA accesses never look like core responses.
+  Other addresses answer DECERR.
+* soc/hornet/hornet_soc_keccak_dma.v: hornet_soc_dma + DMA accelerator, same wrapper as above.
+* rtl/lint.vlt: lint waivers (unused address/resp bits, AxPROT).
+
+Verification (Verilator; scratch testbenches, not part of the repo yet)
+------------------------------------------------------------------------
+* Legacy layout: submodule sources + rtl/legacy_* + soc/legacy/* run the existing Kyber firmware with
+  cycle counts identical to before the split (P at 9,608,334 accelerator, 8,585,392 DMA).
+* keccak_accelerator_axil vs legacy_keccak_accelerator_wb: 20000 random ops (byte-enable STATE/XOR
+  writes, reads incl. unmapped, clear, start, writes while busy, STATUS writes) with random B/R
+  backpressure; 64682 reads compared, all equal.
+* keccak_accelerator_dma_axil vs legacy_keccak_accelerator_dma_wb: 1500 random steps (LOAD/STORE
+  0..200 B, ABSORB/SQUEEZE 0..700 B with random rates, rejected commands, register-path ops) against a
+  stalling WB memory and an AXI memory with random readies, independent AW/W and random R/B latency.
+  STATUS, DMA registers, state and all of memory equal after every step; AXI valid/payload stability
+  checked every cycle. Error responses (ABSORB running off memory, SQUEEZE/STORE to unmapped
+  addresses) give DONE+ERROR without a hang, and the next command clears ERROR.
+  Fault injection (full write strobes, AW re-issued, XOR ignoring strobes) is caught by these tests.
+* SoC firmware on the new core (upstream soc_tb, DUT swapped): software Keccak-f[1600] on the core vs
+  the accelerator, P(0) vector, random states, XOR window with byte stores, CLEAR; with DMA: LOAD/STORE
+  with a partial word, ABSORB from DMEM and from .rodata in IMEM at rates 136/168/72, 3-block SQUEEZE
+  with a partial word, unmapped address, bad rate, while the core keeps writing DMEM. PASS on both
+  tops; the register-path firmware takes the same cycle count on both.
+* Upstream sw tests (axi, fencei, fpu, hello, irq, isa) PASS on hornet_soc_keccak and
+  hornet_soc_keccak_dma with cycle counts identical to stock hornet_soc.
+
+Not done
+--------
+* cbr.sh, verilator/Makefile, keccak_test/ and test/ml-kem-kyber/test/Makefile still use source/ and
+  the old module names; they do not work until migrated.
+* Kyber firmware / driver for the new core (sw framework, base address 0x6000_0000).
+* FPGA board tops and Vivado synthesis/timing for the new tops.
+
+
 2026-10-23  DMA version of the Keccak accelerator
 =====================================================================
 

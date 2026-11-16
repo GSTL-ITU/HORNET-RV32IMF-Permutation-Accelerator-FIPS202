@@ -1,0 +1,14 @@
+`verilator_config
+// Lint waivers for the Keccak accelerators (use together with HORNET-RV32IMF/rtl/lint.vlt).
+// the accelerators decode only the low 12 address bits (4 KiB window)
+lint_off -rule UNUSEDSIGNAL -file "*/keccak_accelerator_*axil.v" -match "*s_awaddr*"
+lint_off -rule UNUSEDSIGNAL -file "*/keccak_accelerator_*axil.v" -match "*s_araddr*"
+// only resp[1] (SLVERR/DECERR) matters
+lint_off -rule UNUSEDSIGNAL -file "*/keccak_accelerator_dma_axil.v" -match "*m_bresp*"
+lint_off -rule UNUSEDSIGNAL -file "*/keccak_accelerator_dma_axil.v" -match "*m_rresp*"
+// state/XOR offsets: only the word index bits are used
+lint_off -rule UNUSEDSIGNAL -file "*/keccak_accelerator_core.v" -match "*_ofs*"
+// SoC tops (soc/hornet): the accelerator ignores AxPROT; the IMEM base may be 0
+lint_off -rule UNUSEDSIGNAL -file "*/soc/hornet/hornet_soc_keccak*.v" -match "*prot*"
+lint_off -rule UNUSEDSIGNAL -file "*/soc/hornet/hornet_soc_dma.v" -match "*prot*"
+lint_off -rule UNSIGNED -file "*/soc/hornet/axil_mem_port.v"
