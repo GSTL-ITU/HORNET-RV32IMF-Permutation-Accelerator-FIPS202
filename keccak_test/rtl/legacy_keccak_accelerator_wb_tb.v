@@ -1,13 +1,13 @@
 `timescale 1ns/1ps
 
-// Unit testbench for keccak_accelerator_wb. Writes one 25-lane state per test case to
+// Unit testbench for legacy_keccak_accelerator_wb. Writes one 25-lane state per test case to
 // test_data_out_rtl.hex; sw/test.c computes the same sequence with the reference C code.
 //   1. legacy flow: load via STATE, start, poll DONE, read back      -> P(in)
 //   2-4. back-to-back permutations on the resident state             -> P^2(in) .. P^4(in)
 //   5. CLEAR command, permute the zero state                         -> P(0)
 //   6. CLEAR, absorb via XOR window (mixed byte-enable writes)       -> P(in)
 //   7. XOR in again, attempt a STATE write while busy (must be ignored) -> P(P(in) ^ in)
-module keccak_accelerator_wb_tb();
+module legacy_keccak_accelerator_wb_tb();
 
     reg         wb_cyc_i;
     reg         wb_stb_i;
@@ -27,7 +27,7 @@ module keccak_accelerator_wb_tb();
     localparam ST_ADDR  = 32'h1000_9020;
     localparam XOR_ADDR = 32'h1000_9120;
 
-    keccak_accelerator_wb DUT (
+    legacy_keccak_accelerator_wb DUT (
         .wb_cyc_i(wb_cyc_i),
         .wb_stb_i(wb_stb_i),
         .wb_we_i(wb_we_i),

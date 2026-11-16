@@ -7,15 +7,12 @@
 #include "../randombytes.h"
 #include "../fips202.h"
 #include "kyber_kat.h"
-
-// Hornet Debug Interface
-#define DEBUG_IF_ADDR 0x10008010
-#define DEBUG_REG     ((volatile char *)DEBUG_IF_ADDR)
+#include "report.h"   // debug interface (legacy core) or UART + exit code (main core)
 
 // Reduced iterations for bare-metal FPGA simulation speed
 #define NTESTS 1
 
-// Failure codes written to the debug interface before 'F'
+// Failure codes reported before 'F'
 #define FAIL_FIPS202 'H'  // FIPS 202 known-answer test mismatch
 #define FAIL_KAT     'K'  // Kyber output differs from the software-Keccak reference
 
@@ -95,19 +92,19 @@ static int test_keys(void)
   uint8_t key_a[CRYPTO_BYTES];
   uint8_t key_b[CRYPTO_BYTES];
 
-  *DEBUG_REG = 40;
+  report(40);
 
   // Alice generates a public key
   crypto_kem_keypair(pk, sk);
-  *DEBUG_REG = 41;
+  report(41);
 
   // Bob derives a secret key and creates a response
   crypto_kem_enc(ct, key_b, pk);
-  *DEBUG_REG = 42;
+  report(42);
 
   // Alice uses Bob's response to get her shared key
   crypto_kem_dec(key_a, ct, sk);
-  *DEBUG_REG = 43;
+  report(43);
 
   if(memcmp(key_a, key_b, CRYPTO_BYTES)) {
     return 1; // Fail flag
@@ -126,7 +123,7 @@ static int test_keys(void)
     k |= memcmp(h, KAT_CT_SHA3_256, 32);
     k |= memcmp(key_a, KAT_SS, CRYPTO_BYTES);
     if(k) {
-      *DEBUG_REG = FAIL_KAT;
+      report(FAIL_KAT);
       return 1;
     }
   }
@@ -191,15 +188,15 @@ static int test_invalid_ciphertext(void)
 
 int main(void)
 {
-  // Signal start to TCL console
-  *DEBUG_REG = 'S'; // 32'd83
+  // Signal start
+  report('S'); // 32'd83
   
   unsigned int i;
   int r = 0;
 
   if(test_fips202()) {
-    *DEBUG_REG = FAIL_FIPS202;
-    *DEBUG_REG = 'F';
+    report(FAIL_FIPS202);
+    report('F');
     while(1) { __asm__ volatile ("nop"); }
   }
 
@@ -209,13 +206,13 @@ int main(void)
     r |= test_invalid_ciphertext();
     
     if(r) {
-      *DEBUG_REG = 'F'; // Signal Fail: 32'd70
+      report('F'); // Signal Fail: 32'd70
       while(1) { __asm__ volatile ("nop"); }
     }
   }
 
   // If we made it through the loop, all tests passed
-  *DEBUG_REG = 'P'; // Signal Pass: 32'd80
+  report('P'); // Signal Pass: 32'd80
   
   // Trap the CPU to prevent executing junk memory
   while(1) { 

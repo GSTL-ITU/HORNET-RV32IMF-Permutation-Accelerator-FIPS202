@@ -1,6 +1,6 @@
 `timescale 1ns/1ps
 
-// Unit testbench for keccak_accelerator_dma_wb. A 4 KiB RAM model answers the DMA master
+// Unit testbench for legacy_keccak_accelerator_dma_wb. A 4 KiB RAM model answers the DMA master
 // one cycle after each accepted request and injects pseudo-random stalls (as the core does
 // when it wins the memory port). Output RAM regions are dumped byte by byte to
 // dma_out_rtl.hex; sw/dma_test.c computes the same sequence with the reference permutation.
@@ -10,7 +10,7 @@
 //   3. LOAD 200 B, PIO permutation, STORE 200 B, STORE 13 B (partial word)
 //   4. Rejected commands (rate 0, unknown command) set DONE + ERROR
 //   5. ABSORB 3 B (tail shorter than a word), PIO padding, SQUEEZE 32 B (SHA3-256 shaped)
-module keccak_accelerator_dma_wb_tb();
+module legacy_keccak_accelerator_dma_wb_tb();
 
     reg         wb_cyc_i;
     reg         wb_stb_i;
@@ -50,7 +50,7 @@ module keccak_accelerator_dma_wb_tb();
     localparam CMD_LOAD    = 32'd3;
     localparam CMD_STORE   = 32'd4;
 
-    keccak_accelerator_dma_wb DUT (
+    legacy_keccak_accelerator_dma_wb DUT (
         .wb_cyc_i(wb_cyc_i),
         .wb_stb_i(wb_stb_i),
         .wb_we_i(wb_we_i),

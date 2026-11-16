@@ -1,44 +1,84 @@
-KYBER (Kyber768, NTESTS = 1, test_keys(), 40 MHz Verilator simulation)
+KYBER (Kyber768, NTESTS = 1, test_keys(), Verilator simulation)
 
-    Cycle numbers are printed by barebones_top_tb.v ("cycle N : code").
-    All builds use the same test firmware and seed; only the Keccak implementation differs.
+    All builds use the same test firmware and seed; only the core and the Keccak implementation differ.
+    Cycle numbers: HORNET-RV32IMF main - mcycle, printed by the firmware over the UART;
+                   HORNET-RV32IMF legacy - printed by soc/legacy/barebones_top_tb.v ("cycle N : code").
 
-    with accelerator + DMA (DMA=1 bash cbr.sh, barebones_wb_top_dma):
+=== HORNET-RV32IMF main (AXI4-Lite SoC) ===
 
-            cycle   22418 :    40 - start (test_keys)
-            cycle  700201 :    41 - keypair generation end
-            cycle 1604984 :    42 - encapsulation end
-            cycle 2880172 :    43 - decapsulation end
+    with accelerator + DMA (DMA=1 bash cbr.sh, hornet_soc_keccak_dma):
 
-        keypair generation :   677,783 cycles   (2.82x)
-        encapsulation      :   904,783 cycles   (2.40x)
-        decapsulation      : 1,275,188 cycles   (1.95x)
+            cycle    25584 :    40 - start (test_keys)
+            cycle   592859 :    41 - keypair generation end
+            cycle  1346608 :    42 - encapsulation end
+            cycle  2406180 :    43 - decapsulation end
 
-    with accelerator (bash cbr.sh, barebones_wb_top):
+        keypair generation :   567,275 cycles   (2.87x)
+        encapsulation      :   753,749 cycles   (2.44x)
+        decapsulation      : 1,059,572 cycles   (1.98x)
 
-            cycle   54064 :    40 - start (test_keys)
-            cycle  811934 :    41 - keypair generation end
-            cycle 1798484 :    42 - encapsulation end
-            cycle 3142321 :    43 - decapsulation end
+    with accelerator (bash cbr.sh, hornet_soc_keccak):
 
-        keypair generation :   757,870 cycles   (2.53x)
-        encapsulation      :   986,550 cycles   (2.20x)
-        decapsulation      : 1,343,837 cycles   (1.85x)
+            cycle    62432 :    40 - start (test_keys)
+            cycle   737219 :    41 - keypair generation end
+            cycle  1600601 :    42 - encapsulation end
+            cycle  2757548 :    43 - decapsulation end
+
+        keypair generation :   674,787 cycles   (2.41x)
+        encapsulation      :   863,382 cycles   (2.13x)
+        decapsulation      : 1,156,947 cycles   (1.81x)
 
     reference, software Keccak (KECCAK_SW=1 bash cbr.sh):
 
-            cycle  753906 :    40 - start (test_keys)
-            cycle 2668357 :    41 - keypair generation end
-            cycle 4838557 :    42 - encapsulation end
-            cycle 7330705 :    43 - decapsulation end
+            cycle   648388 :    40 - start (test_keys)
+            cycle  2275185 :    41 - keypair generation end
+            cycle  4113776 :    42 - encapsulation end
+            cycle  6212545 :    43 - decapsulation end
 
-        keypair generation : 1,914,451 cycles
-        encapsulation      : 2,170,200 cycles
-        decapsulation      : 2,492,148 cycles
+        keypair generation : 1,626,797 cycles
+        encapsulation      : 1,838,591 cycles
+        decapsulation      : 2,098,769 cycles
+
+=== HORNET-RV32IMF legacy (Wishbone SoC) ===
+
+    with accelerator + DMA (CORE=legacy DMA=1 bash cbr.sh, barebones_wb_top_keccak_dma):
+
+            cycle    22113 :    40 - start (test_keys)
+            cycle   690465 :    41 - keypair generation end
+            cycle  1598746 :    42 - encapsulation end
+            cycle  2873264 :    43 - decapsulation end
+
+        keypair generation :   668,352 cycles   (2.56x)
+        encapsulation      :   908,281 cycles   (2.17x)
+        decapsulation      : 1,274,518 cycles   (1.80x)
+
+    with accelerator (CORE=legacy bash cbr.sh, barebones_wb_top_keccak):
+
+            cycle    57288 :    40 - start (test_keys)
+            cycle   827752 :    41 - keypair generation end
+            cycle  1840211 :    42 - encapsulation end
+            cycle  3205432 :    43 - decapsulation end
+
+        keypair generation :   770,464 cycles   (2.22x)
+        encapsulation      : 1,012,459 cycles   (1.95x)
+        decapsulation      : 1,365,221 cycles   (1.68x)
+
+    reference, software Keccak (CORE=legacy KECCAK_SW=1 bash cbr.sh):
+
+            cycle   633554 :    40 - start (test_keys)
+            cycle  2342787 :    41 - keypair generation end
+            cycle  4316189 :    42 - encapsulation end
+            cycle  6612479 :    43 - decapsulation end
+
+        keypair generation : 1,709,233 cycles
+        encapsulation      : 1,973,402 cycles
+        decapsulation      : 2,296,290 cycles
 
     Keccak-f[1600] on the accelerator: 24 cycles per permutation (keccak_test).
-    Speedups are relative to the software reference. All 130 DMA-eligible transfers in the DMA run
-    (FIPS 202 KATs + test_keys) were word aligned, so none fell back to register access.
+    Speedups are relative to the software reference on the same core.
+    The main core is faster in the software reference too (new pipeline), so its speedups are
+    not comparable 1:1 with the legacy ones; the remaining time is mostly polynomial arithmetic.
 
-    Note: the previous report (1.75M / 2.40M / 3.27M with accelerator) is invalid. The driver never
-    read the permuted state back, so the "accelerated" run did not compute FIPS 202 at all.
+    Note: an earlier version of this report (keypair 757,870 / 677,783 / 1,914,451 on the legacy
+    core) was measured with an older firmware; HEAD of 2026-11-16 already gave the legacy numbers
+    above before the repository split.

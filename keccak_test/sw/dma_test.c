@@ -4,7 +4,7 @@
 #include <string.h>
 #include "fips202.h"
 
-// Mirrors the test sequence in rtl/keccak_accelerator_dma_wb_tb.v: a byte-level model of the
+// Mirrors the test sequence in rtl/legacy_keccak_accelerator_dma_wb_tb.v: a byte-level model of the
 // DMA commands on top of the reference permutation.
 
 static uint8_t ram[4096];

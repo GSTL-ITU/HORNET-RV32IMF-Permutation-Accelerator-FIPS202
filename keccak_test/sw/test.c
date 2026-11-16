@@ -4,7 +4,7 @@
 #include <inttypes.h>
 #include "fips202.h"
 
-// Mirrors the test sequence in rtl/keccak_accelerator_wb_tb.v using the reference permutation.
+// Mirrors the test sequence in rtl/legacy_keccak_accelerator_wb_tb.v using the reference permutation.
 static void dump_state(FILE *f, const uint64_t state[25]) {
     for (int i = 0; i < 25; i++) {
         fprintf(f, "%016" PRIx64 "\n", state[i]);

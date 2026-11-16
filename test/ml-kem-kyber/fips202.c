@@ -353,8 +353,8 @@ static void KeccakF1600_StatePermute(uint64_t state[25])
  * The state lives in the accelerator; 64-bit lane i is word 2i (low) and 2i+1 (high),
  * i.e. byte offset n of the Keccak state is byte n of the word window.
  *
- * With -DKECCAK_DMA (requires keccak_accelerator_dma_wb / barebones_wb_top_dma) word-aligned
- * buffers are moved by the accelerator's DMA engine; unaligned ones fall back to register access.
+ * With -DKECCAK_DMA (requires a DMA top: hornet_soc_keccak_dma, or barebones_wb_top_keccak_dma on
+ * the legacy core) word-aligned buffers are moved by the accelerator's DMA engine; unaligned ones fall back to register access.
  */
 #define KECCAK_CTRL   (*(volatile uint32_t *)(KECCAK_BASE_ADDR + KECCAK_CTRL_OFS))
 #define KECCAK_STATUS (*(volatile uint32_t *)(KECCAK_BASE_ADDR + KECCAK_STATUS_OFS))

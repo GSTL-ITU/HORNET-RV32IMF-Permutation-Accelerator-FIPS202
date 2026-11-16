@@ -3,10 +3,10 @@
 This repository contains a hardware/software environment for the Keccak-f[1600] permutation accelerator (FIPS 202 standard) for the HORNET-RV32IMF processor.
 The accelerator works with both generations of the core, which are included as submodules:
 
-| Submodule                | Upstream branch | Bus                      | Accelerators |
-| :----------------------- | :-------------- | :----------------------- | :----------- |
-| `HORNET-RV32IMF/`        | `main`          | AXI4-Lite                | `keccak_accelerator_axil`, `keccak_accelerator_dma_axil` |
-| `HORNET-RV32IMF-legacy/` | `legacy`        | Wishbone                 | `legacy_keccak_accelerator_wb`, `legacy_keccak_accelerator_dma_wb` |
+| Submodule                | Upstream branch | Bus       | Accelerators |
+| :----------------------- | :-------------- | :-------- | :----------- |
+| `HORNET-RV32IMF/`        | `main`          | AXI4-Lite | `keccak_accelerator_axil`, `keccak_accelerator_dma_axil` |
+| `HORNET-RV32IMF-legacy/` | `legacy`        | Wishbone  | `legacy_keccak_accelerator_wb`, `legacy_keccak_accelerator_dma_wb` |
 
 No modifications are made inside the cores or the submodules; the accelerators are added as bus slaves (and, for DMA, a bus master) in SoC tops that live in this repository.
 Software modifications are made so the core sends the data through the accelerator address range.
@@ -17,8 +17,9 @@ git clone --recurse-submodules <this repo>
 git submodule update --init
 ```
 
-**STATUS:** Only ML-KEM (Kyber768) has been tested so far, on the legacy core. On the new core the
-accelerators are verified in simulation (see `changes.log`); the Kyber firmware is not ported yet.
+**STATUS:** ML-KEM (Kyber768) passes on both cores in simulation (FIPS 202 known-answer tests and a
+cross-check against a software-Keccak host run). The FPGA build of the main core with the accelerator
+meets timing at 50 MHz on the Nexys 4 DDR; it has not been run on a board yet.
 
 ## Accelerator
 
@@ -30,8 +31,8 @@ accelerators are verified in simulation (see `changes.log`); the Kyber firmware 
 
 | Core   | Base address  | SoC top |
 | :----- | :------------ | :------ |
-| legacy | `0x1000_9000` | `soc/legacy/barebones_wb_top_keccak.v` (slave 4, `0x1000_9000 - 0x1000_9FFF`) |
 | main   | `0x6000_0000` | `soc/hornet/hornet_soc_keccak.v` (4 KiB in the external AXI range, parameter `KECCAK_BASE`) |
+| legacy | `0x1000_9000` | `soc/legacy/barebones_wb_top_keccak.v` (Wishbone slave 4, `0x1000_9000 - 0x1000_9FFF`) |
 
 | Offset          | Name   | Access | Description |
 | :-------------- | :----- | :----- | :---------- |
@@ -42,25 +43,26 @@ accelerators are verified in simulation (see `changes.log`); the Kyber firmware 
 | `0x020 - 0x0E7` | STATE  | R/W    | 50 words; lane *i* = `{word 2i+1, word 2i}` (little-endian) |
 | `0x120 - 0x1E7` | XOR    | W      | 50 words; written data is XORed into the state (reads return STATE) |
 
-State/XOR writes are ignored while busy; byte enables (`wb_sel_i` / `wstrb`) are honoured.
-The C driver is in `test/ml-kem-kyber/fips202.c`; register offsets are in `test/ml-kem-kyber/params.h`.
+State/XOR writes are ignored while busy; byte enables (`wstrb` / `wb_sel_i`) are honoured.
+The C driver is in `test/ml-kem-kyber/fips202.c`; the base address and register offsets are in
+`test/ml-kem-kyber/params.h` (`-DHORNET_LEGACY` selects the legacy base address).
 
 ### DMA version
 
-| Top (legacy, `soc/legacy/`)   | Top (main, `soc/hornet/`) | Accelerator | Description |
-| :---------------------------- | :------------------------ | :---------- | :---------- |
-| `barebones_wb_top_keccak`     | `hornet_soc_keccak`       | `legacy_keccak_accelerator_wb` / `keccak_accelerator_axil` | CPU moves every word over the bus |
-| `barebones_wb_top_keccak_dma` | `hornet_soc_keccak_dma`   | `legacy_keccak_accelerator_dma_wb` / `keccak_accelerator_dma_axil` | Accelerator has a bus master and moves data to/from RAM itself |
+| Top (main, `soc/hornet/`) | Top (legacy, `soc/legacy/`)   | Accelerator | Description |
+| :------------------------ | :---------------------------- | :---------- | :---------- |
+| `hornet_soc_keccak`       | `barebones_wb_top_keccak`     | `keccak_accelerator_axil` / `legacy_keccak_accelerator_wb` | CPU moves every word over the bus |
+| `hornet_soc_keccak_dma`   | `barebones_wb_top_keccak_dma` | `keccak_accelerator_dma_axil` / `legacy_keccak_accelerator_dma_wb` | Accelerator has a bus master and moves data to/from RAM itself |
 
 The DMA accelerators keep the same register map at `0x000 - 0x1E7` (so non-DMA firmware runs on them
 unmodified) and add a DMA engine. The master port shares memory with the core's data bus; the core
 always has priority, so core timing is unchanged and the DMA uses the cycles in which the core does not
 access memory (1 word per cycle).
 
-- legacy: the Wishbone master shares memory port 1 with the core.
 - main: the AXI4-Lite master reaches IMEM (port B) and DMEM through `soc/hornet/axil_mem_port.v` in
   `hornet_soc_dma` (a copy of `hornet_soc` with that one addition). Buffers may be in DMEM or in IMEM
   (e.g. `.rodata`); other addresses answer DECERR and the command ends with ERROR set.
+- legacy: the Wishbone master shares memory port 1 with the core.
 
 | Offset  | Name       | Access | Description |
 | :------ | :--------- | :----- | :---------- |
@@ -84,7 +86,8 @@ only set once every write has been acknowledged. The driver (`-DKECCAK_DMA`) use
 buffers and falls back to register access otherwise.
 
 On the main core the accelerator's DONE (DMA DONE for the DMA version) is also ORed into `irq_i[0]`
-(fast interrupt 2).
+(fast interrupt 2). `hornet_soc_keccak` and `hornet_soc_keccak_dma` have the same parameters and ports
+as `hornet_soc`, so they are drop-in replacements.
 
 ## Project Structure
 
@@ -99,10 +102,12 @@ On the main core the accelerator's DONE (DMA DONE for the DMA version) is also O
 │  ├─ legacy_keccak_accelerator_dma_wb.v  # legacy core, Wishbone slave + DMA master
 │  └─ lint.vlt                            # Verilator lint waivers
 ├─ soc/
-│  ├─ hornet/               # main core: hornet_soc_keccak(_dma), hornet_soc_dma, axil_mem_port
+│  ├─ hornet/               # main core: hornet_soc_keccak(_dma), hornet_soc_dma, axil_mem_port, testbench
 │  └─ legacy/               # legacy core: barebones_wb_top_keccak(_dma), testbench, debug interface
-├─ keccak_test/             # Unit tests for the accelerators (RTL vs reference C)
+├─ fpga/                    # main core: board top and Vivado scripts (Nexys 4 DDR, Nexys Video)
+├─ keccak_test/             # Unit tests for the accelerators
 ├─ rom_gen/                 # ROM generator (legacy core)
+├─ scripts/                 # elf2hex.py (IMEM/DMEM images for the main core)
 ├─ test/                    # PQC source codes and makefiles
 ├─ verilator/               # Verilator build files
 ├─ cbr.sh                   # Auto -build & test- script
@@ -110,160 +115,86 @@ On the main core the accelerator's DONE (DMA DONE for the DMA version) is also O
 └─ changes.log              # Change log
 ```
 
-The SoC tops reuse the submodules' RTL as is. For the legacy core, compile
-`HORNET-RV32IMF-legacy/source/sources_1/imports/src/*.v` except `fpga_top.v`, `barebones_wb_top.v` and
-`debug_interface_wb.v`, plus `rtl/legacy_*.v` and `soc/legacy/*.v`. For the main core, compile
-`HORNET-RV32IMF/rtl/{core,fpu,soc}/*.v` plus `rtl/keccak_accelerator_*.v` and `soc/hornet/*.v`.
-`hornet_soc_keccak` and `hornet_soc_keccak_dma` have the same parameters and ports as `hornet_soc`.
+The SoC tops reuse the submodules' RTL as is (see `verilator/Makefile` for the exact source lists):
+- main: `HORNET-RV32IMF/rtl/{core,fpu,soc}/*.v` + `rtl/keccak_accelerator_*.v` + `soc/hornet/*.v`
+- legacy: `HORNET-RV32IMF-legacy/source/sources_1/imports/src/*.v` except `fpga_top.v`, `barebones_wb_top.v`
+  and `debug_interface_wb.v`, + `rtl/legacy_*.v` + `soc/legacy/*.v`
 
 ## Prerequisites
 
 - gcc (host, also used to generate the Kyber known-answer header)
-- riscv32-unknown-elf toolchain
-- verilator
-- make
+- riscv32-unknown-elf toolchain (with the `rv32im/ilp32` multilib and newlib-nano)
+- verilator (5.x, `--timing`)
+- make, python3
+- Vivado (FPGA build only)
 
 ## Usage and Verification
 
-> **Note:** `cbr.sh`, `verilator/Makefile`, `keccak_test/Makefile` and `test/ml-kem-kyber/test/Makefile`
-> still refer to the old `source/` directory and the old module names. They are not migrated to the
-> layout above yet, so the commands below do not work until then.
-
-To compile, build and run the PQC source codes in the Hornet bare-metal configuration, simply run:
+To compile, build and run ML-KEM on the SoC in Verilator, run:
 ```sh
-bash cbr.sh                # accelerator, barebones_wb_top
-DMA=1 bash cbr.sh          # accelerator with DMA, barebones_wb_top_dma
-KECCAK_SW=1 bash cbr.sh    # software Keccak reference
+bash cbr.sh                          # main core, accelerator         (hornet_soc_keccak)
+DMA=1 bash cbr.sh                    # main core, accelerator + DMA   (hornet_soc_keccak_dma)
+KECCAK_SW=1 bash cbr.sh              # main core, software Keccak reference
+CORE=legacy bash cbr.sh              # legacy core, accelerator       (barebones_wb_top_keccak)
+CORE=legacy DMA=1 bash cbr.sh        # legacy core, accelerator + DMA (barebones_wb_top_keccak_dma)
+CORE=legacy KECCAK_SW=1 bash cbr.sh  # legacy core, software Keccak reference
 ```
-`DMA=1` selects both the firmware driver (`make build DMA=1` in `test/ml-kem-kyber/test`) and the
-simulated top (`make run DMA=1` in `verilator/`, built into `obj_dir_dma`). A DMA firmware image needs the
-DMA top; the non-DMA firmware runs on either top. The testbench gives up after 100M cycles (`TEST TIMEOUT`).
-The testbench prints the cycle number of every debug-interface write and stops on `P` (pass) or `F` (fail).
-Before the KEM tests the firmware runs FIPS 202 known-answer tests (fails with code `H` = 72), and the
-Kyber keypair/ciphertext/shared secret are compared against a host run with the software Keccak
+`CORE` and `DMA` select both the firmware (`make build` in `test/ml-kem-kyber/test`) and the simulated
+top (`make run` in `verilator/`, built into `obj_dir_<core>[_dma]`). A DMA firmware image needs the DMA
+top; the non-DMA firmware runs on either top.
+
+The firmware prints `cycle N : code` for every checkpoint (`S` = 83 start, 40..43 around keypair /
+encapsulation / decapsulation, `P` = 80 pass, `F` = 70 fail) and ends with `TEST PASSED` / `TEST FAILED`.
+Before the KEM tests it runs FIPS 202 known-answer tests (fails with code `H` = 72), and the Kyber
+keypair/ciphertext/shared secret are compared against a host run with the software Keccak
 (`gen_kat.c` -> `kyber_kat.h`, fails with code `K` = 75).
+- main core: the cycle counter is read by the firmware and printed over the UART at the end; the
+  simulation stops through the system control EXIT register (`PASS` / `FAIL` from the testbench,
+  timeout 200M cycles, `make run TIMEOUT=...`).
+- legacy core: codes go to the debug interface; the testbench prints the cycle of each write, stops on
+  `P` / `F` and gives up after 100M cycles (`TEST TIMEOUT`).
+
+Results are in `cycle_report.txt`.
 
 To run the accelerator unit tests, use the makefile in `keccak_test`:
 ```sh
 cd keccak_test
-make            # both tests
-make test       # keccak_accelerator_wb only
-make test_dma   # keccak_accelerator_dma_wb only
+make                 # all four tests
+make legacy          # test + test_dma
+make axil            # test_axil + test_dma_axil
 ```
-Both simulate the accelerator RTL directly and compare it against the reference C permutation.
-- `test`: single permutation, back-to-back permutations, the clear command, absorbing via the XOR window
-  with byte-enable writes, and writes during a busy permutation.
-- `test_dma`: a RAM model with pseudo-random stalls; multi-block ABSORB with tail, ABSORB of an exact
-  multiple of the rate, multi-block SQUEEZE with a partial last word (bytes past the end must stay
-  untouched), LOAD/STORE, rejected commands, and CPU accesses while the DMA is busy.
+- `test`: `legacy_keccak_accelerator_wb` against the reference C permutation: single permutation,
+  back-to-back permutations, the clear command, absorbing via the XOR window with byte-enable writes,
+  and writes during a busy permutation.
+- `test_dma`: `legacy_keccak_accelerator_dma_wb` against the reference C model with a RAM model with
+  pseudo-random stalls; multi-block ABSORB with tail, ABSORB of an exact multiple of the rate,
+  multi-block SQUEEZE with a partial last word (bytes past the end must stay untouched), LOAD/STORE,
+  rejected commands, and CPU accesses while the DMA is busy.
+- `test_axil`: `keccak_accelerator_axil` against `legacy_keccak_accelerator_wb`, 20000 random operations
+  with random AXI backpressure; every read must match.
+- `test_dma_axil`: `keccak_accelerator_dma_axil` against `legacy_keccak_accelerator_dma_wb`, 1500 random
+  DMA commands against a stalling Wishbone RAM and an AXI4-Lite RAM with random readies and latencies;
+  state, registers and all of memory must match after every command, AXI valid/payload stability is
+  checked every cycle, plus error-response tests.
+
+### FPGA (main core)
+
+`fpga/hornet_board_keccak.v` is the upstream board top (`HORNET-RV32IMF/fpga/common/hornet_board.v`)
+with `hornet_soc_keccak`, or `hornet_soc_keccak_dma` with `KECCAK_DMA = 1`. `fpga/build.tcl` and
+`fpga/create_project.tcl` use the submodule's board definitions and constraints.
+```sh
+cd fpga
+make build                   # ML-KEM firmware + bitstream, Nexys 4 DDR, 50 MHz
+make build DMA=1             # with the DMA accelerator
+make build BOARD=nexysvideo  # other board
+make project [DMA=1]         # Vivado GUI project
+make program [DMA=1]         # program the board over JTAG
+```
+Outputs go to `fpga/build/<board>-<keccak|keccak_dma>/` (bitstream, `timing.rpt`, `utilization*.rpt`,
+`result.txt`). The firmware prints its cycle report over the UART (115200 baud) after reset.
 
 ### Contact
 Ali Barış Bozoğlu: [bozoglu20@itu.edu.tr](mailto:bozoglu20@itu.edu.tr) - [GitHub](https://github.com/alibarisbozoglu)
 
-
-**Original README of the legacy core (see the submodules for the current versions):**
-
----
-
-# HORNET-RV32IMF: A RV32IMF RISC-V SoC
-
-![Status](https://img.shields.io/badge/Status-Completed-success)
-![Hardware](https://img.shields.io/badge/Target-Nexys%20Video%20%7C%20Nexys--4--DDR-blue)
-![ISA](https://img.shields.io/badge/ISA-RV32IMF-orange)
-![Toolchain](https://img.shields.io/badge/Vivado-2025.2-red)
-
-**HORNET-RV32IMF** is an academic-grade, 5-stage pipelined RISC-V soft-core processor designed for high-efficiency floating-point arithmetic and Edge AI applications. It implements the **RV32IMF** Instruction Set Architecture (ISA) and is optimized for deployment across Xilinx Artix-7 platforms, including the Nexys Video and Nexys-4-DDR.
-
----
-
-
-
----
-
-## 👥 Contributors & Research
-
-This project is the result of collaborative engineering at the **Istanbul Technical University (ITU)** and the **GSTL Lab**.
-
-### 🎓 Academic Advisor
-* **Prof. Dr. Sıddıka Berna Örs Yalçın** - [ITU Academic Profile](https://web.itu.edu.tr/~orssi/)
-
-### 🏛️ Core Creators
-* **Yavuz Selim Tozlu** - [GitHub](https://github.com/yavuz650)
-* **Yasin Yılmaz** - [GitHub](https://github.com/yasinxyz)
-
-### 📐 FPU Design & Implementation
-* **Salih Daysal**
-* **Mehmet Emin Tuzcu**
-
-### 🧪 Verification
-* **Deniz Zakir Eroglu** - [GitHub](https://github.com/dezariye)
-* **Mete Kaan Özden** - [GitHub](https://github.com/mkozden)
-
-### ✏️ Organization
-* **Deniz Zakir Eroglu** - [GitHub](https://github.com/dezariye)
-* **Yusuf Tekin** - [GitHub](https://github.com/jsphtkn)
-
-### 📎 Projects
-* **Yusuf Tekin** & **Ahmet Tolga Özkan**- 
-🔗 **[HORNET-RV32IMF-For-AI-Applications](https://github.com/GSTL-ITU/HORNET-RV32IMF-For-AI-Applications)**
-
-### 📚 Academic Publications
-The initial design of Hornet core is detailed in the following conference paper:
-> Y. S. Tozlu, Y. Yilmaz, B. Ors, “Design and Implementation Of a 32-Bit RISC-V Core”, 12th International Conference on Electrical and Electronics Engineering (ELECO), 2021. 
-
-The verification methodologies used in this core are detailed in the following conference paper:
-> D. Z. Eroglu, M. K. Ozden, B. Ors, “Creating Verification Environment Using RISCV-DV With Open and Closed Source Tools”, 9th International Symposium on Multidisciplinary Studies and Innovative Technologies (ISMSIT), 2025.
-
----
-
-## ⚙️ Hardware Specifications
-
-| Parameter | Specification |
-| :--- | :--- |
-| **ISA** | RV32IMF (Integer, Multiply/Divide, Single-Precision Floating Point) |
-| **Pipeline** | 5-Stage In-Order |
-| **FPU** | IEEE-754 Single-Precision Hardware Unit |
-| **Max Frequency** | 26.25 MHz (Target: Nexys-4-DDR & Nexys Video) |
-| **Interconnect** | Wishbone |
-| **Peripherals** | UART (Interrupt-driven), GPIO, MTIME, Debug Interface |
-
----
-
-## 🛠️ Toolchain & Setup
-
-### **Software Requirements**
-* **Toolchain:** `riscv32-unknown-elf-gcc` (RV32IMF / ILP32F)
-* **Simulation:** Vivado Simulator / Verilator
-* **Python:** 3.x (with `pyserial` for hardware-in-the-loop tests)
-
-### **Hardware Requirements**
-* **FPGA:** Nexys-4-DDR (Artix-7 100t) or Nexys Video (Artix-7 200t)
-* **Vivado Version:** Verified on **Vivado 2025.2**
-
----
-
-## 📂 Project Structure
-
-* **`source/`**: RTL Verilog files for the core, FPU, and Wishbone peripherals.
-* **`drivers/`**: Bare-metal C drivers for UART, GPIO, and Interrupt handling.
-* **`test/`**: Comprehensive test suites including FPU arithmetic, Bubble Sort, and MLP Neural Network inference.
-* **`rom_gen/`**: Custom tools to convert compiled binaries into FPGA-ready `.mem` files.
-
----
-
-## 🚀 Quick Start
-
-1.  **Generate Firmware:** Navigate to `test/gpio` or `test/uart-fpu-fpga` and run `make build`.
-2.  **Synthesis:** Load the `source/` files into Vivado 2025.2. Ensure the generated `memory_init.mem` is linked to the BRAM initialization.
-3.  **Deploy:** Program the Nexys-4-DDR and monitor the output via the USB-UART bridge (Baud: 115200).
-
----
-
-## 👤 Contact & Support
-
-For technical inquiries or bug reports, please open an issue in this repository or contact the organizers:
-* **Yusuf Tekin:** [tekiny20@itu.edu.tr](mailto:tekiny20@itu.edu.tr) - [GitHub Profile](https://github.com/jsphtkn)
-* **Deniz Zakir Eroglu:** [eroglud20@itu.edu.tr](mailto:eroglud20@itu.edu.tr) - [GitHub Profile](https://github.com/dezariye)
-
----
-*Developed at Istanbul Technical University. 🐝*
+The HORNET-RV32IMF core, its documentation and its contributors are described in the submodules'
+`README.md` files.

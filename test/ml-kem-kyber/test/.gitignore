@@ -3,3 +3,4 @@
 *.elf
 gen_kat
 kyber_kat.h
+*.hex
