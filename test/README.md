@@ -1,9 +1,14 @@
 # Test firmware
 
+## `common/`
+
+- `keccak_acc.h`: accelerator driver shared by both programs (base address per core, register
+  offsets, permute / clear / XOR / read helpers, DMA commands with `-DKECCAK_DMA`, one-shot hash).
+- `report.h`: `report(code)`, progress and result reporting on both cores.
+
 ## `ml-kem-kyber/`
 
-ML-KEM (Kyber768, reference implementation) with the Keccak accelerator driver in `fips202.c`
-(`params.h` holds the accelerator base address and register offsets).
+ML-KEM (Kyber768, reference implementation) with the Keccak accelerator in `fips202.c`.
 
 `ml-kem-kyber/test/` builds the bare-metal test program `hornet_kyber.c`:
 1. FIPS 202 known-answer tests (SHA3-256/512, SHAKE128/256; expected values from Python hashlib).
@@ -21,6 +26,25 @@ make copy_mem [CORE=...]                                # copy the image to ../.
 - `CORE=legacy`: HORNET-RV32IMF legacy, `sim_kyber.data` (unified RAM image from `rom_gen`).
 - `DMA=1`: use the accelerator's DMA engine (needs the DMA top). `KECCAK_SW=1`: software permutation.
 
-Progress and results are reported by `report()` (`test/report.h`): on the main core over the UART at
+Progress and results are reported by `report()` (`common/report.h`): on the main core over the UART at
 the end of the run plus the system control exit code, on the legacy core through the debug interface.
 `cbr.sh` in the repository root builds and simulates in one step.
+
+## `sphincsplus/`
+
+SPHINCS+ from the `sphincsplus` submodule (`sphincsplus/ref`, built unmodified from there):
+- `fips202.c`: SHAKE256 (one-shot and incremental, the part of `ref/fips202.h` that `ref/fips202.c`
+  implements) on the accelerator; replaces `ref/fips202.c` (which `KECCAK_SW=1` builds instead).
+- `randombytes.c`: deterministic SHAKE256 generator (replaces `ref/randombytes.c`, which reads
+  `/dev/urandom`); same seed as the Kyber one.
+- `test/hornet_sphincs.c`: SHAKE256 known-answer tests, keypair / sign / verify compared against a
+  host run with the software Keccak (`gen_kat.c` -> `sphincs_kat.h`, regenerated on every build), and
+  rejection of a modified signature and of a modified message.
+
+```sh
+cd sphincsplus/test
+make build [CORE=hornet|legacy] [DMA=1] [KECCAK_SW=1] [PARAMS=sphincs-shake-128f] [THASH=simple]
+make copy_mem [CORE=...]
+```
+Outputs `sim_sphincs.imem.hex` / `sim_sphincs.dmem.hex` (main) or `sim_sphincs.data` (legacy).
+`TEST=sphincs bash cbr.sh` in the repository root builds and simulates in one step (raise `TIMEOUT`).

@@ -5,24 +5,7 @@
 #define KYBER_K 3	/* Change this for different security strengths */
 #endif
 
-/* Keccak accelerator. Build with -DKECCAK_SW for the software permutation.
- * HORNET-RV32IMF main: keccak_accelerator_(dma_)axil in soc/hornet/hornet_soc_keccak(_dma).v (KECCAK_BASE)
- * HORNET-RV32IMF legacy (-DHORNET_LEGACY): legacy_keccak_accelerator_(dma_)wb, Wishbone slave 4 */
-#ifdef HORNET_LEGACY
-#define KECCAK_BASE_ADDR   0x10009000u
-#else
-#define KECCAK_BASE_ADDR   0x60000000u
-#endif
-#define KECCAK_CTRL_OFS    0x000u  /* W: bit0 start, bit1 clear state; R: bit0 busy */
-#define KECCAK_STATUS_OFS  0x010u  /* R: bit0 done, bit1 busy; W: bit0 -> done */
-#define KECCAK_STATE_OFS   0x020u  /* 50 words, R/W */
-#define KECCAK_XOR_OFS     0x120u  /* 50 words, write XORs into the state */
-/* DMA registers, DMA versions only. Build with -DKECCAK_DMA to use them. */
-#define KECCAK_DMA_ADDR_OFS   0x200u  /* RAM address (word aligned) */
-#define KECCAK_DMA_LEN_OFS    0x204u  /* length in bytes */
-#define KECCAK_DMA_RATE_OFS   0x208u  /* rate in bytes for ABSORB/SQUEEZE */
-#define KECCAK_DMA_CTRL_OFS   0x20Cu  /* W: 1 ABSORB, 2 SQUEEZE, 3 LOAD, 4 STORE; R: bit0 busy */
-#define KECCAK_DMA_STATUS_OFS 0x210u  /* R: bit0 done, bit1 busy, bit2 error; W: bit0 -> done */
+/* Keccak accelerator registers: test/common/keccak_acc.h */
 
 /* Don't change parameters below this line */
 #if   (KYBER_K == 2)

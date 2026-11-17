@@ -5,7 +5,8 @@
 #   make run CORE=legacy        HORNET-RV32IMF legacy, barebones_wb_top_keccak     (memory_init_tb.mem here)
 #   make run CORE=legacy DMA=1  HORNET-RV32IMF legacy, barebones_wb_top_keccak_dma
 #
-# The memory images are copied here by `make copy_mem` in test/ml-kem-kyber/test (see cbr.sh).
+# The memory images are copied here by `make copy_mem` in test/ml-kem-kyber/test or
+# test/sphincsplus/test (see cbr.sh). TIMEOUT=<cycles> changes the simulation limit.
 
 ROOT   = ..
 CORE  ?= hornet
@@ -25,6 +26,11 @@ SUFFIX  =
 endif
 
 ifeq ($(CORE),legacy)
+# TRACE=1: legacy instruction trace (tracer.v -> ../../../../../trace.log relative to the run directory)
+ifeq ($(TRACE),1)
+DEFINES += +define+TRACE
+OBJ_TRACE = _trace
+endif
 # legacy SoC from the submodule; barebones_wb_top and debug_interface_wb are replaced by soc/legacy
 LEGACY_SRC = $(ROOT)/HORNET-RV32IMF-legacy/source/sources_1/imports/src
 SOURCES  := $(filter-out $(addprefix $(LEGACY_SRC)/,fpga_top.v barebones_wb_top.v debug_interface_wb.v), \
@@ -32,9 +38,10 @@ SOURCES  := $(filter-out $(addprefix $(LEGACY_SRC)/,fpga_top.v barebones_wb_top.
             $(ACC_SRCS_LEGACY) $(filter-out %_tb.v,$(wildcard $(ROOT)/soc/legacy/*.v))
 TESTBENCH = $(ROOT)/soc/legacy/barebones_top_tb.v
 TESTBENCH_NAME = barebones_top_tb
-OBJ_DIR  = obj_dir_legacy$(SUFFIX)
+OBJ_DIR  = obj_dir_legacy$(SUFFIX)$(OBJ_TRACE)
 VFLAGS   = -timescale 1ns/1ns
-RUN_ARGS =
+TIMEOUT  ?= 100000000
+RUN_ARGS = +max_cycles=$(TIMEOUT)
 else ifeq ($(CORE),hornet)
 HORNET   = $(ROOT)/HORNET-RV32IMF/rtl
 SOURCES  := $(wildcard $(HORNET)/core/*.v $(HORNET)/fpu/*.v $(HORNET)/soc/*.v) \
@@ -68,6 +75,6 @@ wave: run
 clean:
 	@echo "Cleaning temp files..."
 	rm -f dump.vcd
-	rm -rf obj_dir obj_dir_dma obj_dir_legacy obj_dir_legacy_dma obj_dir_hornet obj_dir_hornet_dma
+	rm -rf obj_dir obj_dir_dma obj_dir_legacy* obj_dir_hornet obj_dir_hornet_dma
 
 .PHONY: lint build run wave clean

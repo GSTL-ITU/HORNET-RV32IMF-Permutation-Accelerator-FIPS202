@@ -57,10 +57,15 @@ end
 wire debug_wr = uut.debug_if_inst.wb_cyc_i && uut.debug_if_inst.wb_stb_i && uut.debug_if_inst.wb_we_i;
 wire [31:0] debug_dat = uut.debug_if_inst.wb_dat_i;
 
-// Give up if the firmware never reports (e.g. a DMA build running on the non-DMA SoC)
-localparam MAX_CYCLES = 64'd100_000_000;
+// Give up if the firmware never reports (e.g. a DMA build running on the non-DMA SoC).
+// Default 100M cycles, +max_cycles=<n> to change.
+reg [63:0] max_cycles;
+initial begin
+    if (!$value$plusargs("max_cycles=%d", max_cycles))
+        max_cycles = 64'd100_000_000;
+end
 always @(posedge clk_i) begin
-    if (cycle == MAX_CYCLES) begin
+    if (cycle == max_cycles) begin
         $display("TEST TIMEOUT after %0d cycles", cycle);
         $finish;
     end

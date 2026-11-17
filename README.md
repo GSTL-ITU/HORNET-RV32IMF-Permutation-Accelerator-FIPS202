@@ -8,6 +8,9 @@ The accelerator works with both generations of the core, which are included as s
 | `HORNET-RV32IMF/`        | `main`          | AXI4-Lite | `keccak_accelerator_axil`, `keccak_accelerator_dma_axil` |
 | `HORNET-RV32IMF-legacy/` | `legacy`        | Wishbone  | `legacy_keccak_accelerator_wb`, `legacy_keccak_accelerator_dma_wb` |
 
+A third submodule, `sphincsplus/` ([sphincs/sphincsplus](https://github.com/sphincs/sphincsplus), `master`),
+provides the SPHINCS+ reference implementation used as a second test program.
+
 No modifications are made inside the cores or the submodules; the accelerators are added as bus slaves (and, for DMA, a bus master) in SoC tops that live in this repository.
 Software modifications are made so the core sends the data through the accelerator address range.
 
@@ -17,8 +20,8 @@ git clone --recurse-submodules <this repo>
 git submodule update --init
 ```
 
-**STATUS:** ML-KEM (Kyber768) passes on both cores in simulation (FIPS 202 known-answer tests and a
-cross-check against a software-Keccak host run). The FPGA build of the main core with the accelerator
+**STATUS:** ML-KEM (Kyber768) and SPHINCS+-SHAKE-128f pass on both cores in simulation (FIPS 202
+known-answer tests and a cross-check against a software-Keccak host run). The FPGA build of the main core with the accelerator
 meets timing at 50 MHz on the Nexys 4 DDR; it has not been run on a board yet.
 
 ## Accelerator
@@ -44,8 +47,9 @@ meets timing at 50 MHz on the Nexys 4 DDR; it has not been run on a board yet.
 | `0x120 - 0x1E7` | XOR    | W      | 50 words; written data is XORed into the state (reads return STATE) |
 
 State/XOR writes are ignored while busy; byte enables (`wstrb` / `wb_sel_i`) are honoured.
-The C driver is in `test/ml-kem-kyber/fips202.c`; the base address and register offsets are in
-`test/ml-kem-kyber/params.h` (`-DHORNET_LEGACY` selects the legacy base address).
+The driver is `test/common/keccak_acc.h` (base address, register offsets, permutation / absorb /
+squeeze helpers; `-DHORNET_LEGACY` selects the legacy base address). `test/ml-kem-kyber/fips202.c`
+(Kyber's FIPS 202 API) and `test/sphincsplus/fips202.c` (SPHINCS+'s SHAKE256 API) are built on it.
 
 ### DMA version
 
@@ -94,6 +98,7 @@ as `hornet_soc`, so they are drop-in replacements.
 ```
 ├─ HORNET-RV32IMF/          # submodule: HORNET-RV32IMF, main branch (AXI4-Lite SoC)
 ├─ HORNET-RV32IMF-legacy/   # submodule: HORNET-RV32IMF, legacy branch (Wishbone SoC)
+├─ sphincsplus/             # submodule: SPHINCS+ reference implementation (sphincs/sphincsplus, master)
 ├─ rtl/                     # Keccak accelerators
 │  ├─ keccak_accelerator_core.v           # permutation + register file (shared by the AXI versions)
 │  ├─ keccak_accelerator_axil.v           # main core, AXI4-Lite slave
@@ -108,7 +113,7 @@ as `hornet_soc`, so they are drop-in replacements.
 ├─ keccak_test/             # Unit tests for the accelerators
 ├─ rom_gen/                 # ROM generator (legacy core)
 ├─ scripts/                 # elf2hex.py (IMEM/DMEM images for the main core)
-├─ test/                    # PQC source codes and makefiles
+├─ test/                    # test programs: ml-kem-kyber/, sphincsplus/ (SoC side), common/ (driver)
 ├─ verilator/               # Verilator build files
 ├─ cbr.sh                   # Auto -build & test- script
 ├─ cycle_report.txt         # Cycle count reports
@@ -122,7 +127,7 @@ The SoC tops reuse the submodules' RTL as is (see `verilator/Makefile` for the e
 
 ## Prerequisites
 
-- gcc (host, also used to generate the Kyber known-answer header)
+- gcc (host, also used to generate the Kyber / SPHINCS+ known-answer headers)
 - riscv32-unknown-elf toolchain (with the `rv32im/ilp32` multilib and newlib-nano)
 - verilator (5.x, `--timing`)
 - make, python3
@@ -139,6 +144,9 @@ CORE=legacy bash cbr.sh              # legacy core, accelerator       (barebones
 CORE=legacy DMA=1 bash cbr.sh        # legacy core, accelerator + DMA (barebones_wb_top_keccak_dma)
 CORE=legacy KECCAK_SW=1 bash cbr.sh  # legacy core, software Keccak reference
 ```
+`TEST=sphincs` runs SPHINCS+ instead of ML-KEM, with the same `CORE` / `DMA` / `KECCAK_SW` options
+(see [SPHINCS+](#sphincs) below).
+
 `CORE` and `DMA` select both the firmware (`make build` in `test/ml-kem-kyber/test`) and the simulated
 top (`make run` in `verilator/`, built into `obj_dir_<core>[_dma]`). A DMA firmware image needs the DMA
 top; the non-DMA firmware runs on either top.
@@ -152,9 +160,32 @@ keypair/ciphertext/shared secret are compared against a host run with the softwa
   simulation stops through the system control EXIT register (`PASS` / `FAIL` from the testbench,
   timeout 200M cycles, `make run TIMEOUT=...`).
 - legacy core: codes go to the debug interface; the testbench prints the cycle of each write, stops on
-  `P` / `F` and gives up after 100M cycles (`TEST TIMEOUT`).
+  `P` / `F` and gives up after 100M cycles (`TEST TIMEOUT`, `make run TIMEOUT=...`).
 
 Results are in `cycle_report.txt`.
+
+### SPHINCS+
+
+`test/sphincsplus/` builds the reference SPHINCS+ (`sphincsplus/ref`, unmodified) for the SoC, with
+`test/sphincsplus/fips202.c` (accelerator) in place of `ref/fips202.c` and a deterministic
+`randombytes.c`. The test program `test/sphincsplus/test/hornet_sphincs.c`:
+1. SHAKE256 known-answer tests through the one-shot and the incremental API (code `H` = 72 on failure).
+2. Keypair, signature and verification; message, pk, sk and a SHAKE256 digest of the signature must
+   match a host run with the software Keccak (`gen_kat.c` -> `sphincs_kat.h`, code `K` = 75); a
+   rejected valid signature fails with `V` = 86.
+3. The signature with one flipped bit, and the signature over a changed message, must be rejected
+   (code `X` = 88).
+
+```sh
+TEST=sphincs TIMEOUT=3000000000 bash cbr.sh                 # main core, accelerator
+TEST=sphincs TIMEOUT=3000000000 DMA=1 bash cbr.sh           # main core, accelerator + DMA
+TEST=sphincs TIMEOUT=3000000000 CORE=legacy bash cbr.sh     # legacy core
+TEST=sphincs PARAMS=sphincs-shake-128s THASH=robust ...     # other SHAKE parameter set / tweakable hash
+```
+Checkpoints: `S` start, 40 keypair, 41 sign, 42 verify, 43 negative tests, then `P` / `F`. Signing
+takes some 10^8 cycles (around 4 minutes in Verilator for 128f with the accelerator), so `TIMEOUT` must be
+raised. Default `PARAMS=sphincs-shake-128f`, `THASH=simple`; on the main core the signature buffer is in
+DMEM (64 KiB), so the 192f/256f sets need a larger `DMEM_SIZE` (firmware and `verilator/Makefile`).
 
 To run the accelerator unit tests, use the makefile in `keccak_test`:
 ```sh

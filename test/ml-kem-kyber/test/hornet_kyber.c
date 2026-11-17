@@ -7,7 +7,7 @@
 #include "../randombytes.h"
 #include "../fips202.h"
 #include "kyber_kat.h"
-#include "report.h"   // debug interface (legacy core) or UART + exit code (main core)
+#include "../../common/report.h"   // debug interface (legacy core) or UART + exit code (main core)
 
 // Reduced iterations for bare-metal FPGA simulation speed
 #define NTESTS 1

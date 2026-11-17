@@ -1,3 +1,70 @@
+2026-11-17  SPHINCS+ test program (sphincsplus submodule)
+=====================================================================
+
+SPHINCS+ (reference implementation, SHAKE parameter sets) runs on both cores with the accelerator
+as a second test program next to ML-KEM. The SPHINCS+ sources are used unmodified.
+
+Layout
+------
+* sphincsplus/  submodule, sphincs/sphincsplus master (7ec789a)
+* test/common/  new, shared by both test programs:
+    keccak_acc.h  accelerator driver (base address per core, register offsets, permute / clear /
+                  XOR / read helpers, DMA commands, one-shot hash). Moved out of
+                  test/ml-kem-kyber/fips202.c and params.h; the Kyber firmware disassembles
+                  identically before and after in all five builds (main, DMA, SW, legacy, legacy DMA).
+    report.h      moved from test/ml-kem-kyber/test/
+* test/sphincsplus/:
+    fips202.c     SHAKE256 (one-shot and incremental, the part of ref/fips202.h that ref/fips202.c
+                  implements) on the accelerator. One-shot hashes stay in the accelerator; the
+                  incremental state (H_msg, PRF_msg) stays in RAM and is moved once per call; DMA for
+                  word-aligned buffers with -DKECCAK_DMA. KECCAK_SW=1 builds ref/fips202.c instead.
+    randombytes.c deterministic SHAKE256 generator, same seed as Kyber's (ref/randombytes.c reads
+                  /dev/urandom)
+    test/hornet_sphincs.c  SHAKE256 known-answer tests (one-shot, incremental with odd/unaligned
+                  chunks and whole-buffer); keypair, sign, verify; message, pk, sk and a SHAKE256
+                  digest of the signature compared against gen_kat.c (host, software Keccak,
+                  regenerated on every build); a flipped signature bit and a changed message must be
+                  rejected. Failure codes H / K / V / X before F.
+    test/Makefile  CORE=hornet|legacy, DMA=1, KECCAK_SW=1, PARAMS=sphincs-shake-*, THASH=simple|robust.
+                  -Wno-error=incompatible-pointer-types: ref/merkle.c passes unsigned int[] as
+                  uint32_t * (unsigned long on riscv32-elf, same size); GCC >= 14 rejects it.
+
+Flows
+-----
+* cbr.sh: TEST=kyber (default) | sphincs; runs from any directory.
+* soc/legacy/barebones_top_tb.v: +max_cycles=<n> (default 100M as before); verilator/Makefile passes
+  TIMEOUT to both cores (SPHINCS+ needs some 10^8 - 10^9 cycles).
+* soc/legacy/barebones_wb_top_keccak(_dma).v: the legacy core's instruction tracer (tracer.v, writes
+  ../../../../../trace.log relative to the run directory) is now only instantiated with
+  `define TRACE (verilator: make run CORE=legacy TRACE=1, obj_dir_legacy*_trace). Run from
+  verilator/ the path is /trace.log, which normally cannot be created, so it never wrote anything
+  there; run from another directory it filled 11 GB during a software-Keccak SPHINCS+ run.
+
+Verification
+------------
+* sphincsplus/ref host tests (make test PARAMS=sphincs-shake-128f THASH=simple): pass.
+* SPHINCS+-SHAKE-128f simple, Verilator: PASS in all six configurations (cycle_report.txt).
+* Kyber768 after the driver move: PASS on both cores, cycle counts unchanged.
+* All firmware variants build: legacy, legacy DMA, DMA, software Keccak, 128s robust.
+
+Results (SPHINCS+-SHAKE-128f simple, cycles)
+--------------------------------------------
+                     keypair        sign          verify
+  main   accelerator        8,638,467    203,706,899    12,912,368
+  main   + DMA              3,939,439     93,385,547     5,984,065
+  main   software Keccak  130,334,455  3,051,001,902   189,836,250
+  legacy accelerator        8,137,464    191,900,666    12,109,153
+  legacy + DMA              3,511,630     83,295,732     5,289,567
+  legacy software Keccak  120,158,112  2,812,222,154   174,984,701
+  speedup (sw / acc, sw / DMA): main 15.0x / 32.7x, legacy 14.7x / 33.8x (signature)
+
+Not done
+--------
+* Only 128f simple was simulated (128s robust builds). On the main core the 17 KiB signature is
+  in DMEM; 192f / 256f need a larger DMEM_SIZE.
+* The FPGA flow (fpga/) still builds the ML-KEM firmware only.
+
+
 2026-11-16  Repository split (HORNET submodules), accelerators for both cores
 =====================================================================
 

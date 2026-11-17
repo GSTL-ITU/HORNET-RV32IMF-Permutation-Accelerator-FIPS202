@@ -6,3 +6,7 @@
 	path = HORNET-RV32IMF-legacy
 	url = https://github.com/GSTL-ITU/HORNET-RV32IMF.git
 	branch = legacy
+[submodule "sphincsplus"]
+	path = sphincsplus
+	url = https://github.com/sphincs/sphincsplus.git
+	branch = master

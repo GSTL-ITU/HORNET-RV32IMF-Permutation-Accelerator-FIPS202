@@ -1,5 +1,5 @@
 /*
- * Progress / result reporting for hornet_kyber.c on both HORNET cores.
+ * Progress / result reporting for the test programs (hornet_kyber.c, hornet_sphincs.c) on both HORNET cores.
  *
  * legacy (-DHORNET_LEGACY): every code is written to the debug interface (0x10008010); the
  *   testbench (soc/legacy/barebones_top_tb.v) prints the cycle of each write and stops on 'P'/'F'.

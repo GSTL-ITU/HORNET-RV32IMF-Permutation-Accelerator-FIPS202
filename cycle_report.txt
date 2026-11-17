@@ -82,3 +82,82 @@ KYBER (Kyber768, NTESTS = 1, test_keys(), Verilator simulation)
     Note: an earlier version of this report (keypair 757,870 / 677,783 / 1,914,451 on the legacy
     core) was measured with an older firmware; HEAD of 2026-11-16 already gave the legacy numbers
     above before the repository split.
+
+
+SPHINCS+ (SPHINCS+-SHAKE-128f simple, sphincsplus/ref, 32-byte message, Verilator simulation)
+
+    Same firmware and seed on all builds (test/sphincsplus/test/hornet_sphincs.c); cycle numbers as above.
+
+=== HORNET-RV32IMF main (AXI4-Lite SoC) ===
+
+    with accelerator + DMA (TEST=sphincs DMA=1 bash cbr.sh, hornet_soc_keccak_dma):
+
+            cycle      57682 :    40 - start (keypair)
+            cycle    3997121 :    41 - keypair generation end
+            cycle   97382668 :    42 - signature end
+            cycle  103366733 :    43 - verification end
+
+        keypair generation :     3,939,439 cycles   (33.08x)
+        signature          :    93,385,547 cycles   (32.67x)
+        verification       :     5,984,065 cycles   (31.72x)
+
+    with accelerator (TEST=sphincs bash cbr.sh, hornet_soc_keccak):
+
+            cycle      73235 :    40 - start (keypair)
+            cycle    8711702 :    41 - keypair generation end
+            cycle  212418601 :    42 - signature end
+            cycle  225330969 :    43 - verification end
+
+        keypair generation :     8,638,467 cycles   (15.09x)
+        signature          :   203,706,899 cycles   (14.98x)
+        verification       :    12,912,368 cycles   (14.70x)
+
+    reference, software Keccak (TEST=sphincs KECCAK_SW=1 bash cbr.sh):
+
+            cycle     391465 :    40 - start (keypair)
+            cycle  130725920 :    41 - keypair generation end
+            cycle 3181727822 :    42 - signature end
+            cycle 3371564072 :    43 - verification end
+
+        keypair generation :   130,334,455 cycles
+        signature          : 3,051,001,902 cycles
+        verification       :   189,836,250 cycles
+
+=== HORNET-RV32IMF legacy (Wishbone SoC) ===
+
+    with accelerator + DMA (TEST=sphincs CORE=legacy DMA=1 bash cbr.sh, barebones_wb_top_keccak_dma):
+
+            cycle      19248 :    40 - start (keypair)
+            cycle    3530878 :    41 - keypair generation end
+            cycle   86826610 :    42 - signature end
+            cycle   92116177 :    43 - verification end
+
+        keypair generation :     3,511,630 cycles   (34.22x)
+        signature          :    83,295,732 cycles   (33.76x)
+        verification       :     5,289,567 cycles   (33.08x)
+
+    with accelerator (TEST=sphincs CORE=legacy bash cbr.sh, barebones_wb_top_keccak):
+
+            cycle      33108 :    40 - start (keypair)
+            cycle    8170572 :    41 - keypair generation end
+            cycle  200071238 :    42 - signature end
+            cycle  212180391 :    43 - verification end
+
+        keypair generation :     8,137,464 cycles   (14.77x)
+        signature          :   191,900,666 cycles   (14.65x)
+        verification       :    12,109,153 cycles   (14.45x)
+
+    reference, software Keccak (TEST=sphincs CORE=legacy KECCAK_SW=1 bash cbr.sh):
+
+            cycle     347602 :    40 - start (keypair)
+            cycle  120505714 :    41 - keypair generation end
+            cycle 2932727868 :    42 - signature end
+            cycle 3107712569 :    43 - verification end
+
+        keypair generation :   120,158,112 cycles
+        signature          : 2,812,222,154 cycles
+        verification       :   174,984,701 cycles
+
+    SPHINCS+ is almost entirely SHAKE256 (one permutation per tweakable hash for 128f), so the
+    speedup is much larger than for ML-KEM. DMA more than halves the time of the register version,
+    so over half of that version's time is the CPU moving hash inputs/outputs over the bus.

@@ -1,0 +1,6 @@
+*.data
+*.bin
+*.elf
+*.hex
+gen_kat
+sphincs_kat.h

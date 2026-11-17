@@ -269,6 +269,9 @@ module barebones_wb_top_keccak_dma (
         .fflags(fflags)
     );
 
+    // Instruction trace of the legacy core (tracer.v writes ../../../../../trace.log, several GB
+    // for a long run). Off by default; `make run CORE=legacy TRACE=1` in verilator/ enables it.
+`ifdef TRACE
     tracer tracer_inst (
         .clk_i(clk_i),
         .valid(tr_valid),
@@ -284,6 +287,7 @@ module barebones_wb_top_keccak_dma (
         .mem_data(tr_mem_data),
         .fpu_flags(fflags)
     );
+`endif
 
     memory_2rw_wb #(
         .RAM_DEPTH(RAM_DEPTH), 
