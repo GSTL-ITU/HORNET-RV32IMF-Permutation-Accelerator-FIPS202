@@ -1,0 +1,91 @@
+MEMORY USAGE OF THE TEST PROGRAMS (riscv32-unknown-elf-gcc 16.1, -O2, newlib-nano)
+
+    ML-KEM:   Kyber768, test/ml-kem-kyber/test/hornet_kyber.c
+    SPHINCS+: SPHINCS+-SHAKE-128f simple, test/sphincsplus/test/hornet_sphincs.c (sphincsplus/ref)
+
+    Sizes are in bytes, from `riscv32-unknown-elf-size -A` of the firmware ELF.
+    IMEM = .init + .text + .rodata. Static DMEM = .data + .sdata + .bss.
+    The stack is the worst-case call depth from GCC -fstack-usage / -fcallgraph-info (see "Stack").
+
+=== HORNET-RV32IMF main (separate IMEM / DMEM) ===
+
+    The firmware includes the upstream startup code, UART/GPIO/timer/IRQ drivers and newlib-nano
+    printf (about 5 KB of the IMEM figures below). Linker defaults in test/*/test/Makefile:
+    IMEM_SIZE = DMEM_SIZE = 64 KiB, STACK_SIZE = 32 KiB.
+
+                                     IMEM    static DMEM    worst-case stack    DMEM needed
+    ML-KEM   accelerator           19,916            824              19,328        ~20.2 KB
+    ML-KEM   accelerator + DMA     20,024            824              19,328        ~20.2 KB
+    ML-KEM   software Keccak       27,980            824              19,328        ~20.2 KB
+    SPHINCS+ accelerator           16,424         17,912               3,200        ~21.1 KB
+    SPHINCS+ accelerator + DMA     16,728         17,912               3,200        ~21.1 KB
+    SPHINCS+ software Keccak       24,520         17,912               3,200        ~21.1 KB
+
+    With the reserved 32 KiB stack the linked DMEM layout is 33,592 (ML-KEM) / 50,680 (SPHINCS+)
+    of 65,536 bytes; the linker checks that static data + STACK_SIZE fit.
+
+    SPHINCS+ static DMEM is almost all the signature buffer (`sig`, SPX_BYTES = 17,088). ML-KEM keeps
+    its keys and ciphertexts on the stack instead, hence the large stack.
+
+=== HORNET-RV32IMF legacy (unified RAM image, rom_gen) ===
+
+    No printf / drivers (results go to the debug interface). linksc.ld: code at 0x0000_0000
+    (ROM region 0x5_0000), data and stack in RAM from 0x5_0000; the stack starts at the top of RAM.
+
+                                    image (code + .data)    .bss
+    ML-KEM   accelerator                   12,236            200
+    ML-KEM   accelerator + DMA             12,344            200
+    ML-KEM   software Keccak               20,304            200
+    SPHINCS+ accelerator                    9,680         17,288
+    SPHINCS+ accelerator + DMA              9,984         17,288
+    SPHINCS+ software Keccak               17,780         17,288
+
+    Stack: same call structure as on the main core (same ABI and compiler), so about the same
+    worst case (~19.3 KB ML-KEM, ~3.2 KB SPHINCS+).
+
+=== Stack ===
+
+    Worst case = largest sum of frame sizes along a call chain from main (GCC -fstack-usage frames,
+    call graph from -fcallgraph-info=su), plus the variable-length arrays and function-pointer calls
+    that the call graph does not cover, added by hand:
+
+    SPHINCS+ (keypair is the deepest; signing ~2.6 KB, verification ~2.9 KB):
+        main 608 -> crypto_sign_keypair 64 -> crypto_sign_seed_keypair 48 -> merkle_gen_root 704
+        -> merkle_sign 288 -> treehashx1 128 -> wots_gen_leafx1 640 (function pointer)
+        -> thash 48 + 608 (VLA: SPX_N + SPX_ADDR_BYTES + 35 * SPX_N) -> shake256 64   = 3,200 bytes
+
+    ML-KEM (decapsulation inside test_keys):
+        main 32 -> test_keys 4,800 -> crypto_kem_dec 1,248 -> indcpa_enc 12,352 -> gen_matrix 768
+        -> kyber_shake128_absorb 80 -> shake128_absorb_once 48                         = 19,328 bytes
+        (randombytes has a VLA of outlen + 32 bytes; its deepest use, 2,432 bytes for a random secret
+        key in test_invalid_sk_a, gives a shallower chain.)
+
+    Not included: the leaf library calls (memcpy, memset, memcmp; a few bytes) and, on the main core,
+    printf at the end of the run (called from main's 608 / 32 byte frame, far below the worst case).
+    The numbers are a static analysis; the stack was not measured at run time. Both programs passed
+    in simulation with the 32 KiB stack.
+
+=== Other SPHINCS+ parameter sets ===
+
+    The signature buffer is static, so DMEM grows with SPX_BYTES (plus a larger thash VLA and WOTS
+    buffers on the stack for larger SPX_N; not analysed):
+
+        sphincs-shake-128s   7,856        sphincs-shake-128f  17,088
+        sphincs-shake-192s  16,224        sphincs-shake-192f  35,664
+        sphincs-shake-256s  29,792        sphincs-shake-256f  49,856
+
+    With the default 32 KiB stack, 192f and 256f do not fit a 64 KiB DMEM (DMEM_SIZE=0x20000, or a
+    smaller STACK_SIZE for 192f).
+
+=== FPGA (Nexys 4 DDR = Nexys A7-100T, xc7a100tcsg324-1) ===
+
+    fpga/ builds the main-core SoC with 64 KiB IMEM + 64 KiB DMEM: 32 of 135 RAMB36 (23.7 %).
+    Both programs fit in this configuration (`make build TEST=kyber|sphincs [DMA=1]` in fpga/);
+    the accelerator itself uses no block RAM.
+
+    Smallest power-of-two memories that would hold them:
+        IMEM 32 KiB for every build above.
+        DMEM 32 KiB: SPHINCS+-128f with STACK_SIZE <= 14 KiB, ML-KEM with STACK_SIZE 20-31 KiB.
+
+    Run time at 50 MHz (cycle_report.txt), SPHINCS+-SHAKE-128f signature:
+        accelerator 4.1 s, accelerator + DMA 1.9 s, software Keccak 61 s.

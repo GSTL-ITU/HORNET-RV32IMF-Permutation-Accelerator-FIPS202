@@ -117,6 +117,7 @@ as `hornet_soc`, so they are drop-in replacements.
 ├─ verilator/               # Verilator build files
 ├─ cbr.sh                   # Auto -build & test- script
 ├─ cycle_report.txt         # Cycle count reports
+├─ memory_report.txt        # IMEM / DMEM / stack usage of the test programs
 └─ changes.log              # Change log
 ```
 
@@ -215,14 +216,17 @@ with `hornet_soc_keccak`, or `hornet_soc_keccak_dma` with `KECCAK_DMA = 1`. `fpg
 `fpga/create_project.tcl` use the submodule's board definitions and constraints.
 ```sh
 cd fpga
-make build                   # ML-KEM firmware + bitstream, Nexys 4 DDR, 50 MHz
+make build                   # ML-KEM firmware + bitstream, Nexys 4 DDR (= Nexys A7-100T), 50 MHz
 make build DMA=1             # with the DMA accelerator
+make build TEST=sphincs      # SPHINCS+-SHAKE-128f firmware instead (PARAMS=, THASH=)
 make build BOARD=nexysvideo  # other board
 make project [DMA=1]         # Vivado GUI project
 make program [DMA=1]         # program the board over JTAG
 ```
-Outputs go to `fpga/build/<board>-<keccak|keccak_dma>/` (bitstream, `timing.rpt`, `utilization*.rpt`,
-`result.txt`). The firmware prints its cycle report over the UART (115200 baud) after reset.
+Outputs go to `fpga/build/<board>-<keccak|keccak_dma>[-sphincs]/` (bitstream, `timing.rpt`, `utilization*.rpt`,
+`result.txt`). The firmware is part of the bitstream, so each test program has its own build. It
+prints its cycle report over the UART (115200 baud) after reset. Both programs fit the default 64 KiB
+IMEM / 64 KiB DMEM (32 RAMB36); see `memory_report.txt`.
 
 ### Contact
 Ali Barış Bozoğlu: [bozoglu20@itu.edu.tr](mailto:bozoglu20@itu.edu.tr) - [GitHub](https://github.com/alibarisbozoglu)

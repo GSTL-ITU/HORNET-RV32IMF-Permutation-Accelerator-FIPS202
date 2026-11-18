@@ -32,6 +32,11 @@ Layout
 Flows
 -----
 * cbr.sh: TEST=kyber (default) | sphincs; runs from any directory.
+* fpga/Makefile: TEST=kyber (default) | sphincs (PARAMS=, THASH=); SPHINCS+ builds go to
+  build/<board>-<keccak|keccak_dma>-sphincs/ (the ML-KEM directories keep their names).
+* memory_report.txt (new): IMEM, static DMEM and worst-case stack of both programs on both cores
+  (GCC -fstack-usage / -fcallgraph-info, VLAs and function-pointer calls added by hand), sizes of
+  the other SPHINCS+ parameter sets, block RAM use on the Nexys 4 DDR / Nexys A7-100T.
 * soc/legacy/barebones_top_tb.v: +max_cycles=<n> (default 100M as before); verilator/Makefile passes
   TIMEOUT to both cores (SPHINCS+ needs some 10^8 - 10^9 cycles).
 * soc/legacy/barebones_wb_top_keccak(_dma).v: the legacy core's instruction tracer (tracer.v, writes
@@ -46,6 +51,8 @@ Verification
 * SPHINCS+-SHAKE-128f simple, Verilator: PASS in all six configurations (cycle_report.txt).
 * Kyber768 after the driver move: PASS on both cores, cycle counts unchanged.
 * All firmware variants build: legacy, legacy DMA, DMA, software Keccak, 128s robust.
+* fpga: make build TEST=sphincs (Nexys 4 DDR, 50 MHz): WNS 1.213 ns, 32 RAMB36, no critical
+  warnings; not run on a board.
 
 Results (SPHINCS+-SHAKE-128f simple, cycles)
 --------------------------------------------
@@ -62,7 +69,6 @@ Not done
 --------
 * Only 128f simple was simulated (128s robust builds). On the main core the 17 KiB signature is
   in DMEM; 192f / 256f need a larger DMEM_SIZE.
-* The FPGA flow (fpga/) still builds the ML-KEM firmware only.
 
 
 2026-11-16  Repository split (HORNET submodules), accelerators for both cores
